@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ポケモンセンター抽選ボット</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
+    <meta name="theme-color" content="#6366f1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-robot"></i>
+                    <h1>ポケモンセンター抽選ボット</h1>
+                </div>
+                <div class="status-indicator" id="statusIndicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">待機中</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Control Panel -->
+            <section class="card control-panel">
+                <h2><i class="fas fa-play-circle"></i> コントロールパネル</h2>
+                <form id="botForm" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="spreadsheetId">
+                            <i class="fas fa-table"></i> Googleスプレッドシート
+                        </label>
+                        <input type="text" id="spreadsheetId" name="spreadsheet_id" 
+                               placeholder="スプレッドシートIDまたはURLを入力" 
+                               value="https://docs.google.com/spreadsheets/d/12WmPRI_MBJfNP_Rpiuh4MewwdLFD6GXP0-nCuvUQ5es/edit?gid=0#gid=0"
+                               required>
+                        <small><i class="fas fa-info-circle"></i> GoogleスプレッドシートIDまたは完全なURLを入力してください。A列: メールアドレス、B列: パスワード（オプション）</small>
+                        <div id="spreadsheetStatus" style="margin-top: 5px; font-size: 0.85em;"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="worksheetName">
+                            <i class="fas fa-sheet"></i> ワークシート名（オプション）
+                        </label>
+                        <input type="text" id="worksheetName" name="worksheet_name" 
+                               placeholder="最初のシートを使用する場合は空欄">
+                        <small><i class="fas fa-info-circle"></i> 使用するワークシート名を入力してください。空欄の場合は最初のシートを使用します。</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-filter"></i> 行範囲（オプション）
+                        </label>
+                        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <input type="number" id="startRow" name="start_row" 
+                                   placeholder="開始行" 
+                                   min="1" 
+                                   style="flex: 1; min-width: 120px;">
+                            <span style="color: var(--text-secondary); font-weight: 600;">から</span>
+                            <input type="number" id="endRow" name="end_row" 
+                                   placeholder="終了行" 
+                                   min="1" 
+                                   style="flex: 1; min-width: 120px;">
+                        </div>
+                        <small><i class="fas fa-info-circle"></i> 処理する行範囲を指定してください（例: 1-100 または 80-200）。空欄の場合はすべての行を処理します。</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="lotteryCount">
+                            <i class="fas fa-list-ol"></i> 処理する抽選数
+                        </label>
+                        <input type="number" id="lotteryCount" name="lottery_count" 
+                               placeholder="抽選数を入力" 
+                               min="1" 
+                               max="5" 
+                               value="1" 
+                               required>
+                        <small><i class="fas fa-info-circle"></i> 処理する抽選数（1-5）。1を入力すると最初の抽選のみ、2を入力すると最初の2つの抽選を処理します。</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="maxConsecutiveFailures">
+                            <i class="fas fa-exclamation-triangle"></i> 最大連続失敗回数
+                        </label>
+                        <input type="number" id="maxConsecutiveFailures" name="max_consecutive_failures" 
+                               placeholder="最大連続失敗回数を入力" 
+                               min="1" 
+                               max="20" 
+                               value="3" 
+                               required>
+                        <small><i class="fas fa-info-circle"></i> この回数連続でログインに失敗した場合、ボットが停止します（1-20）。デフォルト: 3</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-clock"></i> 自動再起動設定
+                        </label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="restart_mode" value="minutes" id="restartModeMinutes" checked>
+                                <span>指定分数後に再起動</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="restart_mode" value="datetime" id="restartModeDatetime">
+                                <span>指定日時に再起動</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="restartMinutesGroup">
+                        <label for="restartMinutes">
+                            <i class="fas fa-hourglass-half"></i> 再起動までの分数
+                        </label>
+                        <input type="number" id="restartMinutes" name="restart_minutes" 
+                               placeholder="分数を入力" 
+                               min="1" 
+                               value="30" 
+                               required>
+                        <small><i class="fas fa-info-circle"></i> 停止時からこの分数後にボットが自動的に再起動します</small>
+                    </div>
+
+                    <div class="form-group" id="restartDatetimeGroup" style="display: none;">
+                        <label for="restartDatetime">
+                            <i class="fas fa-calendar-alt"></i> 再起動日時
+                        </label>
+                        <input type="datetime-local" id="restartDatetime" name="restart_datetime">
+                        <small><i class="fas fa-info-circle"></i> ボットが自動的に再起動する日時を指定してください</small>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit" id="startBtn" class="btn btn-primary">
+                            <i class="fas fa-play"></i> ボット開始
+                        </button>
+                        <button type="button" id="stopBtn" class="btn btn-danger" disabled>
+                            <i class="fas fa-stop"></i> ボット停止
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Progress Section -->
+            <section class="card progress-section">
+                <h2><i class="fas fa-chart-line"></i> 進捗状況</h2>
+                <div class="progress-info">
+                    <div class="progress-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">総メール数:</span>
+                            <span class="stat-value" id="totalEmails">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">処理済み:</span>
+                            <span class="stat-value" id="processedEmails">0 / 0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">成功:</span>
+                            <span class="stat-value" id="successCount" style="color: #10b981;">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">失敗:</span>
+                            <span class="stat-value" id="failedCount" style="color: #ef4444;">0</span>
+                        </div>
+                    </div>
+                    <div class="progress-text-info">
+                        <div class="text-info-item">
+                            <span class="text-info-label">現在のメール:</span>
+                            <span class="text-info-value" id="currentEmail">-</span>
+                        </div>
+                        <div class="text-info-item">
+                            <span class="text-info-label">ステータス:</span>
+                            <span class="text-info-value" id="currentStep">待機中</span>
+                        </div>
+                        <div class="text-info-item" id="scheduledRestartItem" style="display: none;">
+                            <span class="text-info-label">予定された再起動:</span>
+                            <span class="text-info-value" id="scheduledRestart" style="color: #f59e0b;"></span>
+                        </div>
+                    </div>
+                    <div class="progress-bar-wrapper">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                        </div>
+                        <span class="progress-percentage" id="progressPercentage">0%</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Errors Section -->
+            <section class="card errors-section" id="errorsSection" style="display: none;">
+                <div class="section-header">
+                    <h2><i class="fas fa-exclamation-triangle"></i> エラー</h2>
+                </div>
+                <div class="errors-container" id="errorsContainer">
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>処理中...</p>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
