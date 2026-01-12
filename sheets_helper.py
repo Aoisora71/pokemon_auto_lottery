@@ -12,7 +12,7 @@ load_dotenv()
 
 # Path to Google Sheets API credentials JSON file
 # Load from .env file, fallback to default filename if not set
-SHEETS_CREDENTIALS_PATH = os.getenv('GOOGLE_SHEETS_CREDENTIALS_PATH', 'groovy-electron-478008-k6-a6eb0ee3e332.json')
+SHEETS_CREDENTIALS_PATH = os.getenv('GOOGLE_SHEETS_CREDENTIALS_PATH')
 
 def _validate_and_fix_credentials_file(file_path: str) -> dict:
     """
