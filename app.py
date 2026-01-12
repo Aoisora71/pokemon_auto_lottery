@@ -182,8 +182,11 @@ def start_bot_auto_restart():
         return
     
     # Check if spreadsheet is accessible
-    if not check_sheets_access(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name):
+    is_accessible, error_msg = check_sheets_access(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name)
+    if not is_accessible:
         log_message(f"⚠️ Cannot access Google Spreadsheet for auto-restart: {_auto_restart_spreadsheet_id}", 'warning')
+        if error_msg:
+            log_message(f"⚠️ Error details: {error_msg}", 'warning')
         return
     
     log_message(f"🔄 Auto-restarting bot with spreadsheet: {_auto_restart_spreadsheet_id}", 'info')
@@ -691,8 +694,11 @@ def start_bot():
     
     # Check if spreadsheet is accessible
     try:
-        if not check_sheets_access(spreadsheet_id, worksheet_name):
-            return jsonify({'success': False, 'message': 'Googleスプレッドシートにアクセスできません。ID/URLを確認し、サービスアカウントにアクセス権限があることを確認してください。'}), 400
+        is_accessible, error_msg = check_sheets_access(spreadsheet_id, worksheet_name)
+        if not is_accessible:
+            # Use detailed error message if available, otherwise use default message
+            message = error_msg if error_msg else 'Googleスプレッドシートにアクセスできません。ID/URLを確認し、サービスアカウントにアクセス権限があることを確認してください。'
+            return jsonify({'success': False, 'message': message}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': f'Googleスプレッドシートへのアクセスエラー: {str(e)}'}), 400
     
@@ -848,10 +854,13 @@ def check_spreadsheet():
         elif worksheet_name:
             worksheet_name = worksheet_name.strip()
         
-        if check_sheets_access(spreadsheet_id, worksheet_name):
+        is_accessible, error_msg = check_sheets_access(spreadsheet_id, worksheet_name)
+        if is_accessible:
             return jsonify({'success': True, 'message': 'スプレッドシートにアクセス可能です'})
         else:
-            return jsonify({'success': False, 'message': 'スプレッドシートにアクセスできません。ID/URLを確認し、サービスアカウントにアクセス権限があることを確認してください。'}), 400
+            # Use detailed error message if available, otherwise use default message
+            message = error_msg if error_msg else 'スプレッドシートにアクセスできません。ID/URLを確認し、サービスアカウントにアクセス権限があることを確認してください。'
+            return jsonify({'success': False, 'message': message}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': f'スプレッドシート確認エラー: {str(e)}'}), 500
 
