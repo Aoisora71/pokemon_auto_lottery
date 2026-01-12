@@ -5,9 +5,41 @@ import gspread
 from google.oauth2 import service_account
 import os
 from typing import List, Tuple, Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Path to Google Sheets API credentials JSON file
-SHEETS_CREDENTIALS_PATH = 'groovy-electron-478008-k6-38538c9620a5.json'
+# Load from .env file, fallback to default filename if not set
+SHEETS_CREDENTIALS_PATH = os.getenv('GOOGLE_SHEETS_CREDENTIALS_PATH', 'groovy-electron-478008-k6-a6eb0ee3e332.json')
+
+def _validate_and_fix_credentials_file(file_path: str) -> dict:
+    """
+    Validate and fix credentials file if needed
+    Returns the credentials dict
+    """
+    import json
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            creds_data = json.load(f)
+        
+        # Fix private key if it has literal \n instead of actual newlines
+        if 'private_key' in creds_data:
+            private_key = creds_data['private_key']
+            # Check if it has literal \n (escaped) but not actual newlines
+            if '\\n' in private_key and private_key.count('\n') < 5:
+                # Replace literal \n with actual newlines
+                creds_data['private_key'] = private_key.replace('\\n', '\n')
+                # Optionally save the fixed version back (commented out for safety)
+                # with open(file_path, 'w', encoding='utf-8') as f:
+                #     json.dump(creds_data, f, indent=2)
+        
+        return creds_data
+    except json.JSONDecodeError as e:
+        raise Exception(f"認証情報ファイルのJSON形式が無効です: {str(e)}")
+    except Exception as e:
+        raise Exception(f"認証情報ファイルの読み込みエラー: {str(e)}")
 
 def get_sheets_client():
     """
@@ -22,13 +54,64 @@ def get_sheets_client():
         'https://www.googleapis.com/auth/drive'
     ]
     
-    creds = service_account.Credentials.from_service_account_file(
-        SHEETS_CREDENTIALS_PATH,
-        scopes=scope
-    )
+    try:
+        # First, validate and fix credentials file if needed
+        creds_info = _validate_and_fix_credentials_file(SHEETS_CREDENTIALS_PATH)
+        
+        # Try loading from dict first (more reliable for handling encoding issues)
+        try:
+            creds = service_account.Credentials.from_service_account_info(
+                creds_info,
+                scopes=scope
+            )
+        except Exception:
+            # Fallback to file loading
+            creds = service_account.Credentials.from_service_account_file(
+                SHEETS_CREDENTIALS_PATH,
+                scopes=scope
+            )
+    except Exception as e:
+        error_msg = str(e)
+        if 'invalid_grant' in error_msg.lower() or 'jwt' in error_msg.lower():
+            raise Exception(
+                f"認証エラー: JWT署名が無効です。\n\n"
+                f"このエラーは通常、認証情報ファイルが破損しているか、無効な秘密鍵が含まれている場合に発生します。\n\n"
+                f"解決方法:\n"
+                f"1. Google Cloud Console (https://console.cloud.google.com/) にアクセス\n"
+                f"2. プロジェクト 'groovy-electron-478008-k6' を選択\n"
+                f"3. 'IAM & Admin' → 'Service Accounts' に移動\n"
+                f"4. サービスアカウント 'pokemon-sheet@groovy-electron-478008-k6.iam.gserviceaccount.com' を選択\n"
+                f"5. 'Keys' タブ → 'Add Key' → 'Create new key' → 'JSON' を選択\n"
+                f"6. ダウンロードした新しいJSONファイルで '{SHEETS_CREDENTIALS_PATH}' を置き換えてください\n\n"
+                f"元のエラー: {error_msg}"
+            )
+        else:
+            raise Exception(
+                f"認証情報の読み込みに失敗しました: {error_msg}\n\n"
+                f"認証情報ファイル '{SHEETS_CREDENTIALS_PATH}' が有効であることを確認してください。\n"
+                f"必要に応じて、Google Cloud Consoleから新しい認証情報をダウンロードしてください。"
+            ) from e
     
-    client = gspread.authorize(creds)
-    return client
+    try:
+        client = gspread.authorize(creds)
+        return client
+    except Exception as e:
+        error_msg = str(e)
+        if 'invalid_grant' in error_msg.lower() or 'jwt' in error_msg.lower():
+            raise Exception(
+                f"認証エラー: JWT署名が無効です。\n\n"
+                f"このエラーは通常、認証情報ファイルが破損しているか、無効な秘密鍵が含まれている場合に発生します。\n\n"
+                f"解決方法:\n"
+                f"1. Google Cloud Console (https://console.cloud.google.com/) にアクセス\n"
+                f"2. プロジェクト 'groovy-electron-478008-k6' を選択\n"
+                f"3. 'IAM & Admin' → 'Service Accounts' に移動\n"
+                f"4. サービスアカウント 'pokemon-sheet@groovy-electron-478008-k6.iam.gserviceaccount.com' を選択\n"
+                f"5. 'Keys' タブ → 'Add Key' → 'Create new key' → 'JSON' を選択\n"
+                f"6. ダウンロードした新しいJSONファイルで '{SHEETS_CREDENTIALS_PATH}' を置き換えてください\n\n"
+                f"元のエラー: {error_msg}"
+            )
+        else:
+            raise
 
 def extract_spreadsheet_id(spreadsheet_input: str) -> str:
     """
@@ -179,7 +262,19 @@ def write_sheets_result(spreadsheet_id: str, row_number: int, status: str, messa
     except Exception as e:
         raise Exception(f"Error writing to Google Sheets (row {row_number}): {str(e)}")
 
-def check_sheets_access(spreadsheet_id: str, worksheet_name: str = None) -> bool:
+def _get_service_account_email() -> str:
+    """Get service account email from credentials file"""
+    try:
+        import json
+        if os.path.exists(SHEETS_CREDENTIALS_PATH):
+            with open(SHEETS_CREDENTIALS_PATH, 'r', encoding='utf-8') as f:
+                creds_data = json.load(f)
+                return creds_data.get('client_email', 'サービスアカウント')
+    except:
+        pass
+    return 'サービスアカウント'
+
+def check_sheets_access(spreadsheet_id: str, worksheet_name: str = None) -> Tuple[bool, str]:
     """
     Check if we can access the spreadsheet
     
@@ -188,7 +283,9 @@ def check_sheets_access(spreadsheet_id: str, worksheet_name: str = None) -> bool
         worksheet_name: Name of the worksheet (default: first sheet)
     
     Returns:
-        True if accessible, False otherwise
+        Tuple of (is_accessible: bool, error_message: str)
+        If accessible, returns (True, "")
+        If not accessible, returns (False, error_message)
     """
     try:
         client = get_sheets_client()
@@ -202,6 +299,35 @@ def check_sheets_access(spreadsheet_id: str, worksheet_name: str = None) -> bool
         
         # Try to read first row to verify access
         worksheet.get('A1')
-        return True
+        return True, ""
+    except FileNotFoundError as e:
+        return False, f"認証情報ファイルが見つかりません: {str(e)}"
+    except gspread.exceptions.SpreadsheetNotFound:
+        return False, f"スプレッドシートが見つかりません。ID '{spreadsheet_id}' が正しいか確認してください。"
+    except gspread.exceptions.APIError as e:
+        error_code = e.response.status_code if hasattr(e, 'response') else 'unknown'
+        if error_code == 403:
+            service_account_email = _get_service_account_email()
+            return False, f"アクセスが拒否されました (403)。スプレッドシートにサービスアカウント '{service_account_email}' を共有してください。"
+        elif error_code == 404:
+            return False, f"スプレッドシートが見つかりません (404)。ID '{spreadsheet_id}' が正しいか確認してください。"
+        else:
+            return False, f"Google Sheets API エラー ({error_code}): {str(e)}"
     except Exception as e:
-        return False
+        error_msg = str(e)
+        # Check for JWT signature errors
+        if "invalid_grant" in error_msg.lower() or "jwt" in error_msg.lower() or "invalid jwt signature" in error_msg.lower():
+            return False, (
+                f"認証エラー: JWT署名が無効です。\n\n"
+                f"認証情報ファイルが破損している可能性があります。\n"
+                f"Google Cloud Consoleから新しい認証情報をダウンロードして置き換えてください。\n\n"
+                f"詳細: {error_msg}"
+            )
+        # Check for common error patterns
+        elif "PERMISSION_DENIED" in error_msg or "permission" in error_msg.lower():
+            service_account_email = _get_service_account_email()
+            return False, f"アクセス権限がありません。スプレッドシートにサービスアカウント '{service_account_email}' を共有してください。"
+        elif "NOT_FOUND" in error_msg or "not found" in error_msg.lower():
+            return False, f"スプレッドシートが見つかりません。ID '{spreadsheet_id}' が正しいか確認してください。"
+        else:
+            return False, f"エラー: {error_msg}"
