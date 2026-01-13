@@ -64,7 +64,7 @@ _current_log_file = None
 _auto_restart_timer = None
 _auto_restart_spreadsheet_id = None
 _auto_restart_worksheet_name = None
-_auto_restart_lottery_count = 1
+_auto_restart_selected_lotteries = [1]
 _auto_restart_max_failures = 5
 _auto_restart_mode = 'minutes'
 _auto_restart_minutes = 30
@@ -171,7 +171,7 @@ def log_message(message, level='info'):
 
 def start_bot_auto_restart():
     """Start the bot automatically (for auto-restart)"""
-    global bot_thread, bot_status, _auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime, _auto_restart_start_row, _auto_restart_end_row
+    global bot_thread, bot_status, _auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_selected_lotteries, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime, _auto_restart_start_row, _auto_restart_end_row
     
     if bot_status['running']:
         log_message("⚠️ Bot is already running, skipping auto-restart", 'warning')
@@ -218,15 +218,19 @@ def start_bot_auto_restart():
     end_row = _auto_restart_end_row if '_auto_restart_end_row' in globals() else None
     
     # Start bot in separate thread with stored settings
-    bot_thread = threading.Thread(target=run_bot_task, args=(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_lottery_count, max_failures, restart_mode, restart_minutes, restart_datetime, start_row, end_row))
+    bot_thread = threading.Thread(target=run_bot_task, args=(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_selected_lotteries, max_failures, restart_mode, restart_minutes, restart_datetime, start_row, end_row))
     bot_thread.daemon = True
     bot_thread.start()
     
     log_message("✅ Bot auto-restarted successfully", 'success')
 
-def run_bot_task(spreadsheet_id, worksheet_name=None, lottery_count=1, max_consecutive_failures=3, restart_mode='minutes', restart_minutes=30, restart_datetime=None, start_row=None, end_row=None):
+def run_bot_task(spreadsheet_id, worksheet_name=None, selected_lotteries=None, max_consecutive_failures=3, restart_mode='minutes', restart_minutes=30, restart_datetime=None, start_row=None, end_row=None):
     """Run the bot in a separate thread. CAPTCHA API key is loaded from environment variable in bot.py"""
-    global bot_status, _auto_restart_timer, _auto_restart_file_path, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
+    global bot_status, _auto_restart_timer, _auto_restart_file_path, _auto_restart_selected_lotteries, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
+    
+    # Default to [1] if selected_lotteries is None or empty (backward compatibility)
+    if selected_lotteries is None or len(selected_lotteries) == 0:
+        selected_lotteries = [1]
     
     try:
         bot_status['running'] = True
@@ -335,12 +339,13 @@ def run_bot_task(spreadsheet_id, worksheet_name=None, lottery_count=1, max_conse
                 # Set up stop check callback for bot.py
                 bot.set_stop_check(lambda: bot_status['running'])
                 
-                # Set maximum number of lotteries to process
-                bot.set_max_lotteries(lottery_count)
+                # Set selected lottery numbers to process
+                bot.set_selected_lotteries(selected_lotteries)
                 
                 # Run lottery process
                 bot_status['current_step'] = f'Logging in as {user_email}'
-                log_message(f"🔐 Starting login process for {user_email}. Will process up to {lottery_count} lotteries.", 'info')
+                lottery_numbers_str = ', '.join([f'抽選{num}' for num in selected_lotteries])
+                log_message(f"🔐 Starting login process for {user_email}. Will process: {lottery_numbers_str}.", 'info')
                 lottery_result = None
                 try:
                     lottery_result = lottery_begin(driver, wait)
@@ -402,7 +407,7 @@ def run_bot_task(spreadsheet_id, worksheet_name=None, lottery_count=1, max_conse
                             # Schedule auto-restart based on mode
                             _auto_restart_spreadsheet_id = spreadsheet_id
                             _auto_restart_worksheet_name = worksheet_name
-                            _auto_restart_lottery_count = lottery_count
+                            _auto_restart_selected_lotteries = selected_lotteries
                             _auto_restart_max_failures = max_consecutive_failures
                             _auto_restart_mode = restart_mode
                             _auto_restart_minutes = restart_minutes
@@ -506,7 +511,7 @@ def run_bot_task(spreadsheet_id, worksheet_name=None, lottery_count=1, max_conse
                     # Schedule auto-restart based on mode
                     _auto_restart_spreadsheet_id = spreadsheet_id
                     _auto_restart_worksheet_name = worksheet_name
-                    _auto_restart_lottery_count = lottery_count
+                    _auto_restart_selected_lotteries = selected_lotteries
                     _auto_restart_max_failures = max_consecutive_failures
                     _auto_restart_mode = restart_mode
                     _auto_restart_minutes = restart_minutes
@@ -712,13 +717,24 @@ def start_bot():
     if not captcha_api_key:
         return jsonify({'success': False, 'message': 'CAPTCHA APIキーが必要です。.envファイルにCAPTCHA_API_KEYを設定してください。'}), 400
     
-    # Get lottery count from form (default: 1 if not provided)
+    # Get selected lottery numbers from form
     try:
-        lottery_count = int(request.form.get('lottery_count', 1))
-        if lottery_count < 1 or lottery_count > 5:
-            return jsonify({'success': False, 'message': '抽選数は1から5の間である必要があります'}), 400
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'message': '無効な抽選数です。1から5の間の数値を入力してください'}), 400
+        selected_lotteries = request.form.getlist('selected_lotteries')
+        if not selected_lotteries:
+            return jsonify({'success': False, 'message': '少なくとも1つの抽選番号を選択してください'}), 400
+        
+        # Convert to integers and validate
+        selected_lotteries = [int(lottery) for lottery in selected_lotteries]
+        selected_lotteries = sorted(set(selected_lotteries))  # Remove duplicates and sort
+        
+        # Validate range (1-5)
+        if any(lottery < 1 or lottery > 5 for lottery in selected_lotteries):
+            return jsonify({'success': False, 'message': '抽選番号は1から5の間である必要があります'}), 400
+        
+        if len(selected_lotteries) == 0:
+            return jsonify({'success': False, 'message': '少なくとも1つの抽選番号を選択してください'}), 400
+    except (ValueError, TypeError) as e:
+        return jsonify({'success': False, 'message': f'無効な抽選番号です: {str(e)}'}), 400
     
     # Get max consecutive failures from form (default: 3 if not provided)
     try:
@@ -764,7 +780,7 @@ def start_bot():
     # Store spreadsheet ID and settings for potential auto-restart
     _auto_restart_spreadsheet_id = spreadsheet_id
     _auto_restart_worksheet_name = worksheet_name
-    _auto_restart_lottery_count = lottery_count
+    _auto_restart_selected_lotteries = selected_lotteries
     _auto_restart_max_failures = max_consecutive_failures
     _auto_restart_mode = restart_mode
     _auto_restart_minutes = restart_minutes
@@ -789,7 +805,7 @@ def start_bot():
     }
     
     # Start bot in separate thread (CAPTCHA API key is loaded from env in bot.py)
-    bot_thread = threading.Thread(target=run_bot_task, args=(spreadsheet_id, worksheet_name, lottery_count, max_consecutive_failures, restart_mode, restart_minutes, restart_datetime, start_row, end_row))
+    bot_thread = threading.Thread(target=run_bot_task, args=(spreadsheet_id, worksheet_name, selected_lotteries, max_consecutive_failures, restart_mode, restart_minutes, restart_datetime, start_row, end_row))
     bot_thread.daemon = True
     bot_thread.start()
     

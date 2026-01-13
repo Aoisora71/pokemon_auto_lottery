@@ -75,16 +75,32 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="lotteryCount">
-                            <i class="fas fa-list-ol"></i> 処理する抽選数
+                        <label>
+                            <i class="fas fa-list-ol"></i> 処理する抽選番号
                         </label>
-                        <input type="number" id="lotteryCount" name="lottery_count" 
-                               placeholder="抽選数を入力" 
-                               min="1" 
-                               max="5" 
-                               value="1" 
-                               required>
-                        <small><i class="fas fa-info-circle"></i> 処理する抽選数（1-5）。1を入力すると最初の抽選のみ、2を入力すると最初の2つの抽選を処理します。</small>
+                        <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px;">
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border: 2px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                                <input type="checkbox" name="selected_lotteries" value="1" checked style="width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: 600;">抽選1</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border: 2px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                                <input type="checkbox" name="selected_lotteries" value="2" style="width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: 600;">抽選2</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border: 2px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                                <input type="checkbox" name="selected_lotteries" value="3" style="width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: 600;">抽選3</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border: 2px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                                <input type="checkbox" name="selected_lotteries" value="4" style="width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: 600;">抽選4</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border: 2px solid var(--border-color); border-radius: 6px; transition: all 0.2s;">
+                                <input type="checkbox" name="selected_lotteries" value="5" style="width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: 600;">抽選5</span>
+                            </label>
+                        </div>
+                        <small><i class="fas fa-info-circle"></i> 処理する抽選番号を選択してください（複数選択可能）。選択されていない抽選はスキップされます。</small>
                     </div>
 
                     <div class="form-group">

@@ -39,7 +39,7 @@ APPLY_URL = "https://www.pokemoncenter-online.com/lottery/apply.html"
 # Logger callback - will be set by app.py
 _logger = None
 _stop_check = None
-_max_lotteries = 1  # Default number of lotteries to process
+_selected_lotteries = [1]  # Default selected lottery numbers to process
 
 def set_logger(logger_func):
     """Set the logging function to use instead of print()"""
@@ -51,10 +51,10 @@ def set_stop_check(stop_check_func):
     global _stop_check
     _stop_check = stop_check_func
 
-def set_max_lotteries(count):
-    """Set the maximum number of lotteries to process"""
-    global _max_lotteries
-    _max_lotteries = count
+def set_selected_lotteries(lottery_numbers):
+    """Set the selected lottery numbers to process"""
+    global _selected_lotteries
+    _selected_lotteries = sorted(lottery_numbers) if lottery_numbers else [1]
 
 def check_stop():
     """Check if bot should stop. Raises StopIteration if stopped."""
@@ -133,16 +133,16 @@ def _human_like_click(driver, element, wait_time_before=None, wait_time_after=No
         
         # Wait before click (human-like delay)
         if wait_time_before is None:
-            wait_time_before = random.uniform(0.2, 0.5)
+            wait_time_before = random.uniform(0.9, 1.5)
         time.sleep(wait_time_before)
         
         # Use ActionChains to move mouse to element and click
         actions = ActionChains(driver)
-        actions.move_to_element(element).pause(random.uniform(0.1, 0.2)).click().perform()
+        actions.move_to_element(element).pause(random.uniform(0.9, 1.5)).click().perform()
         
         # Wait after click (human-like delay)
         if wait_time_after is None:
-            wait_time_after = random.uniform(0.2, 0.4)
+            wait_time_after = random.uniform(0.9, 1.5)
         time.sleep(wait_time_after)
         
         return True
@@ -170,10 +170,10 @@ def _human_like_type(element, text, clear_first=True):
         for char in text:
             element.send_keys(char)
             # Random delay between 0.05 and 0.15 seconds per character (human-like)
-            time.sleep(random.uniform(0.05, 0.15))
+            time.sleep(random.uniform(0.1, 0.25))
         
         # Final delay after typing
-        time.sleep(random.uniform(0.2, 0.4))
+        time.sleep(random.uniform(0.5, 0.7))
         return True
     except Exception as e:
         log(f"⚠️ Human-like typing failed: {e}, trying fallback...", 'warning')
@@ -181,7 +181,7 @@ def _human_like_type(element, text, clear_first=True):
             if clear_first:
                 element.clear()
             element.send_keys(text)
-            time.sleep(0.2)
+            time.sleep(0.6)
             return True
         except Exception as e2:
             log(f"❌ Fallback typing also failed: {e2}", 'error')
@@ -305,7 +305,7 @@ def solve_recaptcha(site_key, url, max_retries=5):
                     if attempt < max_retries:
                         for _ in range(3):
                             check_stop()
-                            time.sleep(1)
+                            time.sleep(1.5)
                         break  # Break inner loop to retry from start
                     else:
                         raise Exception(f"2captcha error: {result.text}")
@@ -315,7 +315,7 @@ def solve_recaptcha(site_key, url, max_retries=5):
                     if attempt < max_retries:
                         for _ in range(3):
                             check_stop()
-                            time.sleep(1)
+                            time.sleep(1.4)
                         break  # Break inner loop to retry from start
                     else:
                         raise Exception(f"2captcha error: {error_msg}")
@@ -409,7 +409,7 @@ def get_otp_from_gmail():
                 # Try a broader search
                 if attempt == 2:  # After 3 attempts, try broader search
                     log("  🔍 Trying broader search (searching for 'パスコード' or 'passcode')...", 'info')
-                    broader_messages = list_messages(service, max_results=10, query='パスコード OR passcode')
+                    broader_messages = list_messages(service, max_results=6, query='パスコード OR passcode')
                     log(f"  📬 Broader search found {len(broader_messages) if broader_messages else 0} message(s)", 'info')
         
         except StopIteration:
@@ -424,7 +424,7 @@ def get_otp_from_gmail():
         # Check stop during wait (split 5 seconds into 5 checks)
         for _ in range(5):
             check_stop()
-            time.sleep(1)
+            time.sleep(1.4)
     
     raise Exception("OTP not received after 12 attempts (60 seconds). Check if email was sent and verify email address matches.")
 def _attempt_single_login(driver, wait, attempt_number=1):
@@ -442,7 +442,7 @@ def _attempt_single_login(driver, wait, attempt_number=1):
         # Check stop during page load wait
         for _ in range(10):
             check_stop()
-            time.sleep(1)
+            time.sleep(1.4)
         
         check_stop()  # Check stop before entering credentials
         log(f"📧 Entering email: {EMAIL}", 'info')
@@ -470,7 +470,7 @@ def _attempt_single_login(driver, wait, attempt_number=1):
         # Check stop during login wait
         for _ in range(8):
             check_stop()
-            time.sleep(1)
+            time.sleep(1.6)
         
         current_url = driver.current_url
         log(f"📍 Current URL after login attempt: {current_url}", 'info')
@@ -509,239 +509,384 @@ def _attempt_single_login(driver, wait, attempt_number=1):
         log(f"❌ Error during login attempt {attempt_number}: {e}", 'error')
         return (False, False)
 
+def _attempt_login_with_captcha(driver, wait):
+    """
+    Attempt login with CAPTCHA from the start.
+    Returns: (success, needs_retry) tuple where:
+        - success: True if login was successful (redirected away from login page)
+        - needs_retry: True if authentication failed and should retry
+    """
+    try:
+        check_stop()
+        log("🌐 Opening login page...", 'info')
+        driver.get(LOGIN_URL)
+        log("⏳ Waiting for page to load...", 'info')
+        for _ in range(10):
+            check_stop()
+            time.sleep(1)
+        
+        # Find and solve CAPTCHA first
+        check_stop()
+        log("🔍 Looking for CAPTCHA on login page...", 'info')
+        match = re.search(r'6Le[a-zA-Z0-9_-]+', driver.page_source)
+        if match:
+            site_key = match.group(0)
+            log(f"🔑 Found reCAPTCHA site key: {site_key[:30]}...", 'info')
+            
+            try:
+                captcha_solution = solve_recaptcha(site_key, driver.current_url)
+            except StopIteration:
+                log("⏹️ Login process stopped during CAPTCHA solving", 'warning')
+                raise
+            
+            log("💉 Injecting CAPTCHA solution into page...", 'info')
+            driver.execute_script(f'''
+                var callback = function(token) {{
+                    var textareas = document.getElementsByName("g-recaptcha-response");
+                    for (var i = 0; i < textareas.length; i++) {{
+                        textareas[i].value = token;
+                    }}
+                }};
+                callback("{captcha_solution}");
+                
+                if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                    Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
+                        var client = ___grecaptcha_cfg.clients[key];
+                        if (client && client.callback) {{
+                            client.callback("{captcha_solution}");
+                        }}
+                    }});
+                }}
+            ''')
+            log("✅ CAPTCHA solution injected", 'success')
+            time.sleep(2)
+        else:
+            log("ℹ️ No CAPTCHA found on login page, proceeding with login...", 'info')
+        
+        # Enter credentials
+        check_stop()
+        log(f"📧 Entering email: {EMAIL}", 'info')
+        email_field = wait.until(EC.presence_of_element_located((By.ID, "email")))
+        _human_like_scroll_to_element(driver, email_field)
+        _human_like_type(email_field, EMAIL)
+        log("✅ Email entered successfully", 'success')
+        check_stop()
+        
+        check_stop()
+        log("🔒 Entering password...", 'info')
+        if PASSWORD is None:
+            raise ValueError("PASSWORD is not set. Please set it in .env file or include it in column B of the Excel file.")
+        password_field = driver.find_element(By.ID, "password")
+        _human_like_scroll_to_element(driver, password_field)
+        _human_like_type(password_field, PASSWORD)
+        log("✅ Password entered successfully", 'success')
+        check_stop()
+        
+        check_stop()
+        log("🖱️ Clicking login button...", 'info')
+        login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.loginBtn")))
+        _human_like_click(driver, login_btn)
+        log("⏳ Waiting for login response...", 'info')
+        for _ in range(8):
+            check_stop()
+            time.sleep(1)
+        
+        current_url = driver.current_url
+        log(f"📍 Current URL after login attempt: {current_url}", 'info')
+        
+        # Check for authentication failure message
+        log("🔍 Checking login status message from page...", 'info')
+        status_message, is_failure = check_login_status_message(driver, wait)
+        
+        # Check if authentication failed
+        if is_failure and status_message == "認証に失敗しました。":
+            log(f"❌ Authentication failed: '{status_message}'", 'error')
+            return (False, True)  # Failed, needs retry
+        
+        # If still on login page and failure message found, return needs retry
+        if "login.html" in current_url and is_failure:
+            log("⚠️ Still on login page with failure message", 'warning')
+            return (False, True)  # Failed, needs retry
+        
+        # Check if redirected to OTP page (login-mfa.html) - OTP is required
+        # Check this BEFORE checking if redirected away from login page
+        is_otp_page = "login-mfa" in current_url or "login-mfa.html" in current_url
+        if is_otp_page:
+            log("🔐 Redirected to OTP page (login-mfa.html) - OTP is required", 'info')
+            return (False, False)  # Not successful yet, OTP is required (no retry needed for this attempt)
+        
+        # Also check page source for OTP indicators (but only if not already detected)
+        try:
+            page_source_check = "パスコード" in driver.page_source
+            if page_source_check:
+                log("🔐 OTP indicator found in page source - OTP is required", 'info')
+                return (False, False)  # Not successful yet, OTP is required
+        except:
+            pass  # If page source check fails, continue with URL check
+        
+        # If redirected away from login page and not OTP page, login might be successful
+        if "login.html" not in current_url:
+            log("✅ Redirected away from login page - login may be successful", 'success')
+            return (True, False)  # Successful redirect, no retry needed
+        
+        # If still on login page but no failure message, may need OTP
+        if "login.html" in current_url:
+            if status_message:
+                log(f"📋 Login status message: {status_message}", 'info')
+            else:
+                log("ℹ️ No login status message found, may need OTP", 'info')
+            return (False, False)  # Not successful yet, but no authentication failure - may need OTP
+        
+        return (False, False)
+    except StopIteration:
+        raise
+    except Exception as e:
+        log(f"❌ Error during login with CAPTCHA: {e}", 'error')
+        return (False, False)
+
 def lottery_begin(driver, wait=None):
     if wait is None:
         wait = WebDriverWait(driver, 30)
     try:
-        # Attempt login with retry mechanism (max 3 attempts)
+        # Attempt login with CAPTCHA from the start (max 3 attempts per login info)
         max_login_attempts = 3
         login_success = False
-        needs_retry = False
         
         for attempt in range(1, max_login_attempts + 1):
             check_stop()
-            log(f"🔐 Login attempt {attempt}/{max_login_attempts}...", 'info')
+            log(f"🔐 Login attempt {attempt}/{max_login_attempts} with CAPTCHA for email: {EMAIL}...", 'info')
             
-            success, needs_retry = _attempt_single_login(driver, wait, attempt_number=attempt)
+            # Step 1: Attempt login with CAPTCHA
+            success, needs_retry = _attempt_login_with_captcha(driver, wait)
             
             if success:
                 log(f"✅ Login successful on attempt {attempt}!", 'success')
                 login_success = True
                 break
-            
-            # Check if authentication failed with "認証に失敗しました。" message
-            if needs_retry:
+            elif needs_retry:
+                # Authentication failed - retry if attempts remain
                 if attempt < max_login_attempts:
                     log(f"⚠️ Authentication failed on attempt {attempt}. Retrying... (Attempt {attempt + 1}/{max_login_attempts})", 'warning')
                     time.sleep(2)  # Wait before retry
                     continue
                 else:
-                    # Last attempt failed, raise exception to move to next email
-                    log(f"❌ Authentication failed after {max_login_attempts} attempts. Proceeding to next login...", 'error')
+                    # Last attempt failed
+                    log(f"❌ Authentication failed after {max_login_attempts} attempts for email: {EMAIL}", 'error')
                     raise Exception(f"Authentication failed after {max_login_attempts} attempts for email: {EMAIL}")
             else:
-                # No authentication failure message detected, but may need CAPTCHA/OTP - continue with normal flow
-                log("ℹ️ No authentication failure message detected. Continuing with CAPTCHA/OTP flow if needed...", 'info')
-                break
+                # Not successful yet, but no authentication failure - may need OTP
+                log(f"ℹ️ Login attempt {attempt} completed, checking if OTP is required...", 'info')
+                
+                # Check if OTP is required
+                check_stop()
+                if "login-mfa" in driver.current_url or "パスコード" in driver.page_source:
+                    log(f"🔐 OTP (One-Time Password) required for login attempt {attempt}...", 'info')
+                    
+                    # Process OTP as part of this login attempt
+                    otp_success = False
+                    max_otp_retries = 2  # Allow 2 OTP retries per login attempt
+                    
+                    for otp_retry in range(1, max_otp_retries + 1):
+                        check_stop()
+                        log(f"  📧 OTP retry {otp_retry}/{max_otp_retries}...", 'info')
+                        
+                        log("  ⏳ Waiting for OTP email to be sent (5 seconds)...", 'info')
+                        for _ in range(5):
+                            check_stop()
+                            time.sleep(1.5)
+                        
+                        try:
+                            otp = get_otp_from_gmail()
+                            log(f"  ✅ OTP retrieved from Gmail: {otp}", 'success')
+                        except StopIteration:
+                            log("  ⏹️ Login process stopped during OTP retrieval", 'warning')
+                            raise
+                        except Exception as e:
+                            log(f"  ❌ Error retrieving OTP: {e}", 'error')
+                            if otp_retry < max_otp_retries:
+                                log(f"  ⏳ Retrying OTP retrieval... (Retry {otp_retry + 1}/{max_otp_retries})", 'warning')
+                                time.sleep(2)
+                                continue
+                            else:
+                                log(f"  ❌ Failed to retrieve OTP after {max_otp_retries} retries", 'error')
+                                break
+                        
+                        check_stop()
+                        log("  ⌨️ Entering OTP into form...", 'info')
+                        try:
+                            otp_field = wait.until(EC.presence_of_element_located((By.ID, "authCode")))
+                            _human_like_scroll_to_element(driver, otp_field)
+                            _human_like_type(otp_field, otp)
+                            log("  ✅ OTP entered successfully", 'success')
+                        except Exception as e:
+                            log(f"  ❌ Error entering OTP: {e}", 'error')
+                            if otp_retry < max_otp_retries:
+                                continue
+                            else:
+                                break
+                        
+                        check_stop()
+                        log("  🖱️ Submitting OTP...", 'info')
+                        try:
+                            submit_btn = wait.until(EC.element_to_be_clickable((By.ID, "certify")))
+                            _human_like_click(driver, submit_btn)
+                            log("  ⏳ OTP submitted, waiting for authentication response...", 'info')
+                        except Exception as e:
+                            log(f"  ❌ Error submitting OTP: {e}", 'error')
+                            if otp_retry < max_otp_retries:
+                                continue
+                            else:
+                                break
+                        
+                        # Wait for response
+                        for _ in range(10):
+                            check_stop()
+                            time.sleep(1.6)
+                        
+                        log(f"  📍 Current URL after OTP submission: {driver.current_url}", 'info')
+                        
+                        # Check login status after OTP
+                        status_message, is_failure = check_login_status_message(driver, wait)
+                        if status_message:
+                            if is_failure:
+                                log(f"  ❌ Login status message after OTP (FAILURE): {status_message}", 'error')
+                                if otp_retry < max_otp_retries:
+                                    log(f"  ⏳ Retrying with fresh OTP... (Retry {otp_retry + 1}/{max_otp_retries})", 'warning')
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    log(f"  ❌ OTP authentication failed after {max_otp_retries} retries", 'error')
+                                    break
+                            else:
+                                log(f"  📋 Login status message after OTP: {status_message}", 'info')
+                        else:
+                            log("  ℹ️ No login status message found after OTP", 'info')
+                        
+                        # Check if we're still on login-mfa page
+                        if "login-mfa" in driver.current_url:
+                            if "認証に失敗" in driver.page_source:
+                                log(f"  ⚠️ OTP authentication failed - still on login-mfa page with failure message", 'warning')
+                                if otp_retry < max_otp_retries:
+                                    log(f"  ⏳ Retrying with fresh OTP... (Retry {otp_retry + 1}/{max_otp_retries})", 'warning')
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    log(f"  ❌ OTP authentication failed after {max_otp_retries} retries", 'error')
+                                    break
+                            else:
+                                # Still on login-mfa but no failure message - may need another OTP
+                                log("  ℹ️ Still on login-mfa page, may need another OTP...", 'info')
+                                if otp_retry < max_otp_retries:
+                                    continue
+                                else:
+                                    break
+                        else:
+                            # Not on login-mfa page anymore - check if login was successful
+                            if "login.html" not in driver.current_url:
+                                log("  ✅ Redirected away from login page - login may be successful", 'success')
+                                otp_success = True
+                                break
+                            else:
+                                # Still on login page - check for failure
+                                status_message, is_failure = check_login_status_message(driver, wait)
+                                if is_failure:
+                                    log(f"  ❌ Login failed after OTP: {status_message}", 'error')
+                                    if otp_retry < max_otp_retries:
+                                        continue
+                                    else:
+                                        break
+                                else:
+                                    log("  ℹ️ Still on login page but no failure message", 'info')
+                                    if otp_retry < max_otp_retries:
+                                        continue
+                                    else:
+                                        break
+                    
+                    # After OTP processing, check if login was successful
+                    current_url_after_otp = driver.current_url
+                    if otp_success or ("login.html" not in current_url_after_otp and "login-mfa" not in current_url_after_otp):
+                        log(f"✅ Login successful after OTP processing on attempt {attempt}!", 'success')
+                        login_success = True
+                        break
+                    elif "login-mfa" in current_url_after_otp:
+                        # Still on OTP page - OTP processing failed
+                        log(f"⚠️ Still on OTP page after OTP processing on attempt {attempt}", 'warning')
+                        if attempt < max_login_attempts:
+                            log(f"⏳ Retrying login... (Attempt {attempt + 1}/{max_login_attempts})", 'warning')
+                            time.sleep(2)
+                            continue
+                        else:
+                            log(f"❌ Login failed after {max_login_attempts} attempts (OTP processing failed) for email: {EMAIL}", 'error')
+                            raise Exception(f"Authentication failed after {max_login_attempts} attempts (OTP processing failed) for email: {EMAIL}")
+                    else:
+                        # OTP processing failed - this counts as a failed login attempt
+                        log(f"⚠️ OTP processing failed on attempt {attempt}", 'warning')
+                        if attempt < max_login_attempts:
+                            log(f"⏳ Retrying login... (Attempt {attempt + 1}/{max_login_attempts})", 'warning')
+                            time.sleep(2)
+                            continue
+                        else:
+                            log(f"❌ Login failed after {max_login_attempts} attempts (including OTP failures) for email: {EMAIL}", 'error')
+                            raise Exception(f"Authentication failed after {max_login_attempts} attempts (including OTP failures) for email: {EMAIL}")
+                else:
+                    # No OTP required, but login not successful - check if it's a failure
+                    current_url = driver.current_url
+                    if "login.html" in current_url:
+                        status_message, is_failure = check_login_status_message(driver, wait)
+                        if is_failure:
+                            log(f"⚠️ Login failed on attempt {attempt}: {status_message}", 'warning')
+                            if attempt < max_login_attempts:
+                                log(f"⏳ Retrying login... (Attempt {attempt + 1}/{max_login_attempts})", 'warning')
+                                time.sleep(2)
+                                continue
+                            else:
+                                log(f"❌ Authentication failed after {max_login_attempts} attempts for email: {EMAIL}", 'error')
+                                raise Exception(f"Authentication failed after {max_login_attempts} attempts for email: {EMAIL}")
+                        else:
+                            # Still on login page but no failure message - may be waiting for something
+                            log(f"⚠️ Still on login page but no failure message on attempt {attempt}", 'warning')
+                            if attempt < max_login_attempts:
+                                log(f"⏳ Retrying login... (Attempt {attempt + 1}/{max_login_attempts})", 'warning')
+                                time.sleep(2)
+                                continue
+                            else:
+                                log(f"❌ Login verification failed after {max_login_attempts} attempts for email: {EMAIL}", 'error')
+                                raise Exception(f"Login verification failed after {max_login_attempts} attempts for email: {EMAIL}")
+                    else:
+                        # Not on login page - might be successful
+                        log(f"✅ Redirected away from login page on attempt {attempt} - login may be successful", 'success')
+                        login_success = True
+                        break
         
-        # If authentication failed after all attempts (shouldn't reach here if exception was raised)
-        if not login_success and needs_retry:
-            raise Exception(f"Authentication failed after {max_login_attempts} attempts for email: {EMAIL}")
-        
+        # Final verification: login must be successful before proceeding to lottery
+        log(f"📍 Final URL after login process: {driver.current_url}", 'info')
+        log("🔍 Performing final login status verification before proceeding to lottery...", 'info')
         current_url = driver.current_url
         
-        check_stop()  # Check stop before CAPTCHA
-        if "login.html" in current_url and "認証に失敗" in driver.page_source:
-            log("⚠️ Login failed - CAPTCHA required. Starting CAPTCHA solving...", 'warning')
-            
-            match = re.search(r'6Le[a-zA-Z0-9_-]+', driver.page_source)
-            if match:
-                site_key = match.group(0)
-                log(f"🔑 Found reCAPTCHA site key: {site_key[:30]}...", 'info')
-                
-                try:
-                    captcha_solution = solve_recaptcha(site_key, driver.current_url)
-                except StopIteration:
-                    log("⏹️ Login process stopped during CAPTCHA solving", 'warning')
-                    raise
-                
-                log("💉 Injecting CAPTCHA solution into page...", 'info')
-                driver.execute_script(f'''
-                    var callback = function(token) {{
-                        var textareas = document.getElementsByName("g-recaptcha-response");
-                        for (var i = 0; i < textareas.length; i++) {{
-                            textareas[i].value = token;
-                        }}
-                    }};
-                    callback("{captcha_solution}");
-                    
-                    if (typeof ___grecaptcha_cfg !== 'undefined') {{
-                        Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
-                            var client = ___grecaptcha_cfg.clients[key];
-                            if (client && client.callback) {{
-                                client.callback("{captcha_solution}");
-                            }}
-                        }});
-                    }}
-                ''')
-                log("✅ CAPTCHA solution injected", 'success')
-                time.sleep(2)
-                
-                log("🔄 Re-entering credentials after CAPTCHA...", 'info')
-                email_field = driver.find_element(By.ID, "email")
-                _human_like_scroll_to_element(driver, email_field)
-                _human_like_type(email_field, EMAIL)
-                log("✅ Email re-entered", 'success')
-                
-                password_field = driver.find_element(By.ID, "password")
-                _human_like_scroll_to_element(driver, password_field)
-                _human_like_type(password_field, PASSWORD)
-                log("✅ Password re-entered", 'success')
-                
-                log("🖱️ Clicking login button again...", 'info')
-                login_btn = driver.find_element(By.CSS_SELECTOR, "a.loginBtn")
-                _human_like_click(driver, login_btn)
-                log("⏳ Waiting for login response after CAPTCHA...", 'info')
-                # Check stop during login wait
-                for _ in range(8):
-                    check_stop()
-                    time.sleep(1)
-                
-                # Check login status message after CAPTCHA retry
-                log("🔍 Checking login status message after CAPTCHA submission...", 'info')
-                status_message, is_failure = check_login_status_message(driver, wait)
-                if status_message:
-                    if is_failure:
-                        log(f"❌ Login status message after CAPTCHA (FAILURE): {status_message}", 'error')
-                        # Check if we should retry (but we've already tried once, so check attempt count)
-                        # If this is within the retry loop, it will be handled by the retry mechanism
-                    else:
-                        log(f"📋 Login status message after CAPTCHA: {status_message}", 'info')
-                else:
-                    log("ℹ️ No login status message found after CAPTCHA", 'info')
-                
-                # Check current URL after CAPTCHA
-                current_url_after_captcha = driver.current_url
-                if "login.html" in current_url_after_captcha and is_failure and status_message == "認証に失敗しました。":
-                    log("❌ Authentication still failed after CAPTCHA. Will retry if attempts remaining...", 'error')
-                    # This will be caught by the retry loop if attempts remain
-        
-        check_stop()  # Check stop before OTP
-        if "login-mfa" in driver.current_url or "パスコード" in driver.page_source:
-            log("🔐 OTP (One-Time Password) required for login", 'info')
-            
-            log("⏳ Waiting for OTP email to be sent (5 seconds)...", 'info')
-            # Check stop during OTP wait
-            for _ in range(5):
-                check_stop()
-                time.sleep(1)
-            
-            try:
-                otp = get_otp_from_gmail()
-                log(f"✅ OTP retrieved from Gmail: {otp}", 'success')
-            except StopIteration:
-                log("⏹️ Login process stopped during OTP retrieval", 'warning')
-                raise
-            
-            check_stop()
-            log("⌨️ Entering OTP into form...", 'info')
-            otp_field = wait.until(EC.presence_of_element_located((By.ID, "authCode")))
-            _human_like_scroll_to_element(driver, otp_field)
-            _human_like_type(otp_field, otp)
-            log("✅ OTP entered successfully", 'success')
-            check_stop()
-            
-            check_stop()
-            log("🖱️ Submitting OTP...", 'info')
-            submit_btn = wait.until(EC.element_to_be_clickable((By.ID, "certify")))
-            _human_like_click(driver, submit_btn)
-            log("⏳ OTP submitted, waiting for authentication response...", 'info')
-            # Check stop during OTP response wait
-            for _ in range(10):
-                check_stop()
-                time.sleep(1)
-            
-            log(f"📍 Current URL after OTP submission: {driver.current_url}", 'info')
-            
-            # Check login status message after OTP submission
-            log("🔍 Checking login status message after OTP submission...", 'info')
+        # Verify we're not on login page anymore (login must be successful)
+        if "login.html" in current_url or "login-mfa" in current_url:
             status_message, is_failure = check_login_status_message(driver, wait)
-            if status_message:
-                if is_failure:
-                    log(f"❌ Login status message after OTP (FAILURE): {status_message}", 'error')
-                else:
-                    log(f"📋 Login status message after OTP: {status_message}", 'info')
+            if is_failure or "認証に失敗" in driver.page_source:
+                log(f"❌ Final login verification failed - still on login page with failure message: {status_message}", 'error')
+                raise Exception(f"Authentication failed - still on login page after all attempts for email: {EMAIL}")
             else:
-                log("ℹ️ No login status message found after OTP", 'info')
-            
-            # Check if authentication failed after OTP
-            if is_failure and status_message == "認証に失敗しました。":
-                log("❌ Authentication failed after OTP submission. Maximum retries reached for OTP flow.", 'error')
-                raise Exception(f"Authentication failed after OTP for email: {EMAIL}")
-            
-            if "login-mfa" in driver.current_url and "認証に失敗" in driver.page_source:
-                log("⚠️ OTP authentication failed - retrieving fresh OTP and retrying...", 'warning')
-                for _ in range(3):
-                    check_stop()
-                    time.sleep(1)
-                
-                try:
-                    otp = get_otp_from_gmail()
-                    log(f"✅ Fresh OTP retrieved: {otp}", 'success')
-                except StopIteration:
-                    log("⏹️ Login process stopped during OTP retry", 'warning')
-                    raise
-                
-                check_stop()
-                log(f"⌨️ Entering fresh OTP: {otp}", 'info')
-                otp_field = driver.find_element(By.ID, "authCode")
-                _human_like_scroll_to_element(driver, otp_field)
-                _human_like_type(otp_field, otp)
-                log("✅ Fresh OTP entered", 'success')
-                check_stop()
-                
-                check_stop()
-                log("🖱️ Submitting fresh OTP...", 'info')
-                submit_btn = driver.find_element(By.ID, "certify")
-                _human_like_click(driver, submit_btn)
-                log("⏳ Waiting for authentication response after retry...", 'info')
-                # Check stop during retry wait
-                for _ in range(10):
-                    check_stop()
-                    time.sleep(1)
-                
-                log(f"📍 Current URL after OTP retry: {driver.current_url}", 'info')
-                
-                # Check login status message after OTP retry
-                log("🔍 Checking login status message after OTP retry...", 'info')
-                status_message, is_failure = check_login_status_message(driver, wait)
-                if status_message:
-                    if is_failure:
-                        log(f"❌ Login status message after OTP retry (FAILURE): {status_message}", 'error')
-                    else:
-                        log(f"📋 Login status message after OTP retry: {status_message}", 'info')
-                else:
-                    log("ℹ️ No login status message found after OTP retry", 'info')
-                
-                # Check if authentication still failed after OTP retry
-                if is_failure and status_message == "認証に失敗しました。":
-                    log("❌ Authentication failed after OTP retry. Maximum retries reached.", 'error')
-                    raise Exception(f"Authentication failed after OTP retry for email: {EMAIL}")
+                log(f"❌ Final login verification failed - still on login page after all attempts for email: {EMAIL}", 'error')
+                raise Exception(f"Login verification failed - still on login page after all attempts for email: {EMAIL}")
         
-        log(f"📍 Final URL after login process: {driver.current_url}", 'info')
-        
-        # Final login status check
-        log("🔍 Performing final login status message check...", 'info')
+        # Verify login was successful (redirected away from login page)
+        log("✅ Login verification successful - redirected away from login page", 'success')
         status_message, is_failure = check_login_status_message(driver, wait)
         if status_message:
             if is_failure:
                 log(f"❌ Final login status message (FAILURE): {status_message}", 'error')
-                # If we still have authentication failure at this point, it means retries didn't work
                 raise Exception(f"Authentication failed after all attempts for email: {EMAIL}")
             else:
                 log(f"📋 Final login status message: {status_message}", 'info')
         else:
-            log("ℹ️ No login status message found in final check", 'info')
+            log("ℹ️ No login status message found in final check (this is OK if redirected)", 'info')
+        
+        # Only proceed to lottery page if login is confirmed successful
+        log("🎯 Login confirmed successful. Proceeding to lottery page...", 'success')
         
         # Navigate to apply page if not already there
         if "apply.html" not in driver.current_url:
@@ -750,12 +895,12 @@ def lottery_begin(driver, wait=None):
             # Wait for page to fully load
             for _ in range(5):
                 check_stop()
-                time.sleep(1)
+                time.sleep(1.4)
         else:
             log("✅ Already on application page", 'success')
             # Wait a moment for page to stabilize if already on apply page
             check_stop()
-            time.sleep(2)
+            time.sleep(2.5)
         
         # Wait for page to be fully ready and check for any initial pop04 (normal information modal after successful login)
         log("⏳ Waiting for apply page to fully load and checking for pop04 modal...", 'info')
@@ -763,7 +908,7 @@ def lottery_begin(driver, wait=None):
         time.sleep(3)  # Give page time to load and show any pop04
         
         pop04_reloaded = False  # Flag to track if page was reloaded due to exception
-        max_reload_attempts = 5  # Maximum number of reload attempts (changed from 6 to 5)
+        max_reload_attempts = 6  # Maximum number of reload attempts (changed from 6 to 5)
         reload_attempt = 0
         
         # Check for pop04 with exception message "意図しない例外が発生しました。" and reload up to 5 times
@@ -807,7 +952,7 @@ def lottery_begin(driver, wait=None):
                                 # Wait for page to load and verify reload
                                 for wait_iteration in range(5):
                                     check_stop()
-                                    time.sleep(1)
+                                    time.sleep(1.7)
                                     try:
                                         # Check if page has reloaded by verifying driver state
                                         driver.current_url
@@ -833,7 +978,7 @@ def lottery_begin(driver, wait=None):
                                     # Wait for page to load
                                     for wait_iteration in range(5):
                                         check_stop()
-                                        time.sleep(1)
+                                        time.sleep(1.2)
                                     log(f"✅ Page reloaded via get() (Attempt {reload_attempt})", 'success')
                                     reload_success = True
                                     pop04_reloaded = True
@@ -847,7 +992,7 @@ def lottery_begin(driver, wait=None):
                                         # Wait for page to reload
                                         for wait_iteration in range(5):
                                             check_stop()
-                                            time.sleep(1)
+                                            time.sleep(1.6)
                                         log(f"✅ Page reloaded via JavaScript location.reload() (Attempt {reload_attempt})", 'success')
                                         reload_success = True
                                         pop04_reloaded = True
@@ -861,7 +1006,7 @@ def lottery_begin(driver, wait=None):
                                             # Wait for page to reload
                                             for wait_iteration in range(5):
                                                 check_stop()
-                                                time.sleep(1)
+                                                time.sleep(1.8)
                                             log(f"✅ Page reloaded via alternative JavaScript method (Attempt {reload_attempt})", 'success')
                                             reload_success = True
                                             pop04_reloaded = True
@@ -920,7 +1065,7 @@ def lottery_begin(driver, wait=None):
                                                 pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
                                                 _human_like_click(driver, pop04_link)
                                                 log("✅ Pop04 modal closed", 'success')
-                                                time.sleep(1)
+                                                time.sleep(1.7)
                                             except:
                                                 pass
                                             break  # Exit reload loop
@@ -952,7 +1097,7 @@ def lottery_begin(driver, wait=None):
                             log("ℹ️ Pop04 detected but no exception message. This is normal after successful login. Closing pop04...", 'info')
                             try:
                                 # Wait a moment for pop04 to be fully ready
-                                time.sleep(1)
+                                time.sleep(1.5)
                                 pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                 # Try multiple methods to close pop04
                                 pop04_closed = False
@@ -1061,15 +1206,16 @@ def lottery_begin(driver, wait=None):
                 # Wait for page to load
                 for _ in range(5):
                     check_stop()
-                    time.sleep(1)
+                    time.sleep(1.5)
             except Exception as e:
                 log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
         
-        # Normal flow: Process all available lotteries sequentially
-        log(f"🎰 Starting lottery entry process for up to {_max_lotteries} lotteries...", 'info')
+        # Normal flow: Process selected lotteries sequentially
+        lottery_numbers_str = ', '.join([f'抽選{num}' for num in _selected_lotteries])
+        log(f"🎰 Starting lottery entry process for selected lotteries: {lottery_numbers_str}...", 'info')
         check_stop()
         
-        lottery_result = _process_all_lotteries(driver, wait, max_lotteries=_max_lotteries)
+        lottery_result = _process_all_lotteries(driver, wait, selected_lotteries=_selected_lotteries)
         
         log("🎉 All lottery entry processes completed!", 'success')
         return lottery_result
@@ -1106,7 +1252,7 @@ def _check_lottery_status(driver, wait, lottery_number):
                 driver.get(APPLY_URL)
                 for _ in range(3):
                     check_stop()
-                    time.sleep(1)
+                    time.sleep(1.3)
             except Exception as e:
                 log(f"⚠️ Could not navigate to apply page: {e}", 'warning')
                 return (None, False)
@@ -1212,17 +1358,20 @@ def _check_and_solve_captcha_on_apply_page(driver, wait):
         log(f"⚠️ Error checking for CAPTCHA on apply page: {e}", 'warning')
         return False
 
-def _process_all_lotteries(driver, wait, max_lotteries=1):
+def _process_all_lotteries(driver, wait, selected_lotteries=None):
     """
-    Process all available lotteries sequentially.
-    - Checks up to max_lotteries number of lotteries
+    Process selected lotteries sequentially.
+    - Processes only the selected lottery numbers
     - Skips lotteries with status "受付終了" (already closed)
     - Skips lotteries with status "受付完了" (already completed)
     - Processes only lotteries with status "受付中" (currently open)
-    - Continues checking even if a lottery doesn't exist (up to max_lotteries)
+    - Skips lotteries that are not in the selected list
     - Continues to next lottery even if one fails
-    - If pop04/pop05 error occurs, reloads page and restarts from first lottery
+    - If pop04/pop05 error occurs, reloads page and restarts from selected lotteries
     - Tracks completed lotteries and skips them on restart
+    
+    Args:
+        selected_lotteries: List of lottery numbers to process (e.g., [1, 3, 5])
     
     Returns:
         dict: {
@@ -1231,6 +1380,13 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             'message': str  # Detailed message for Excel column D
         }
     """
+    # Default to [1] if selected_lotteries is None or empty
+    if selected_lotteries is None or len(selected_lotteries) == 0:
+        selected_lotteries = [1]
+    
+    selected_lotteries = sorted(set(selected_lotteries))  # Remove duplicates and sort
+    lottery_numbers_str = ', '.join([f'抽選{num}' for num in selected_lotteries])
+    
     # Track completed lotteries (successfully processed or already completed)
     completed_lotteries = set()  # Set of lottery numbers that are completed
     lottery_results = []  # Track results for each lottery
@@ -1243,13 +1399,13 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
     
     while retry_attempt < max_retry_attempts:
         if retry_attempt == 0:
-            log(f"🔍 Starting to check up to {max_lotteries} lotteries for processing...", 'info')
+            log(f"🔍 Starting to process selected lotteries: {lottery_numbers_str}...", 'info')
         else:
-            log(f"🔄 Retry attempt {retry_attempt + 1}/{max_retry_attempts}: Restarting from first lottery after reload...", 'info')
+            log(f"🔄 Retry attempt {retry_attempt + 1}/{max_retry_attempts}: Restarting from selected lotteries after reload...", 'info')
             log(f"📋 Completed lotteries so far: {sorted(completed_lotteries) if completed_lotteries else 'None'}", 'info')
         
         reload_occurred = False  # Track if reload occurred during processing
-        lottery_number = 1
+        lottery_index = 0  # Index in selected_lotteries list
         checked_count = 0  # Number of lotteries checked in this attempt
         
         # Check for CAPTCHA on apply page before starting lottery processing
@@ -1273,9 +1429,12 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             except Exception as e:
                 log(f"⚠️ Could not navigate to apply page: {e}", 'warning')
         
-        # Continue checking until we've checked max_lotteries number of lotteries
-        while checked_count < max_lotteries:
+        # Continue checking until we've checked all selected lotteries
+        while lottery_index < len(selected_lotteries):
             check_stop()
+            
+            # Get the current lottery number from selected list
+            lottery_number = selected_lotteries[lottery_index]
             
             # Ensure we're on the apply page before checking lottery status
             if "apply.html" not in driver.current_url:
@@ -1293,7 +1452,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             # Skip if this lottery was already completed
             if lottery_number in completed_lotteries:
                 log(f"⏭️ Lottery #{lottery_number} already completed. Skipping to next lottery...", 'info')
-                lottery_number += 1
+                lottery_index += 1
                 checked_count += 1
                 continue
             
@@ -1302,21 +1461,21 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             checked_count += 1  # Count this lottery as checked
             
             if not exists:
-                log(f"📋 Lottery #{lottery_number} does not exist. Continuing to check next lottery ({checked_count}/{max_lotteries} checked)...", 'info')
+                log(f"📋 Lottery #{lottery_number} does not exist. Continuing to next selected lottery ({checked_count}/{len(selected_lotteries)} checked)...", 'info')
                 lottery_results.append({
                     'lottery': lottery_number,
                     'status': '存在しない',
                     'reason': f'抽選{lottery_number}は存在しません'
                 })
-                lottery_number += 1
-                continue  # Skip to next lottery number, but continue checking
+                lottery_index += 1
+                continue  # Skip to next selected lottery
             
             # Log status if available
             if status_text:
                 log(f"📊 Lottery #{lottery_number} status: '{status_text}'", 'info')
             else:
                 log(f"📊 Lottery #{lottery_number} exists but status is empty or unavailable. Skipping...", 'warning')
-                lottery_number += 1
+                lottery_index += 1
                 continue
             
             # Skip if already closed (受付終了)
@@ -1327,7 +1486,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'status': 'スキップ(終了)',
                     'reason': f'抽選{lottery_number}は受付終了しています'
                 })
-                lottery_number += 1
+                lottery_index += 1
                 continue
             
             # Skip if already completed (受付完了)
@@ -1339,7 +1498,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'status': 'スキップ(完了)',
                     'reason': f'抽選{lottery_number}は受付完了しています'
                 })
-                lottery_number += 1
+                lottery_index += 1
                 continue
             
             # Process only if open (受付中)
@@ -1375,17 +1534,17 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                         
                         if pop_reload_needed:
-                            # Page was reloaded due to exception - restart from first lottery
-                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                            # Page was reloaded due to exception - restart from selected lotteries
+                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from selected lotteries...", 'warning')
                             log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                             reload_occurred = True
                             retry_attempt += 1
-                            break  # Exit inner loop to restart from first lottery
+                            break  # Exit inner loop to restart from selected lotteries
                         else:
                             # No reload needed, move to next lottery
                             check_stop()
                             time.sleep(1)
-                            lottery_number += 1
+                            lottery_index += 1
                     else:
                         log(f"⚠️ Lottery #{lottery_number} processing failed. Continuing to next lottery...", 'warning')
                         lottery_results.append({
@@ -1398,15 +1557,15 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                         
                         if pop_reload_needed:
-                            # Page was reloaded due to exception - restart from first lottery
-                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                            # Page was reloaded due to exception - restart from selected lotteries
+                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from selected lotteries...", 'warning')
                             log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                             reload_occurred = True
                             retry_attempt += 1
-                            break  # Exit inner loop to restart from first lottery
+                            break  # Exit inner loop to restart from selected lotteries
                         else:
                             # No reload needed, move to next lottery
-                            if checked_count < max_lotteries:
+                            if lottery_index < len(selected_lotteries):
                                 check_stop()
                                 try:
                                     if "apply.html" not in driver.current_url:
@@ -1417,7 +1576,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                                             time.sleep(1)
                                 except Exception as e:
                                     log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
-                            lottery_number += 1
+                            lottery_index += 1
                 except StopIteration:
                     log(f"⏹️ Lottery processing stopped by user at lottery #{lottery_number}", 'warning')
                     lottery_results.append({
@@ -1438,15 +1597,15 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
                     if pop_reload_needed:
-                        # Page was reloaded due to exception - restart from first lottery
-                        log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                        # Page was reloaded due to exception - restart from selected lotteries
+                        log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from selected lotteries...", 'warning')
                         log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                         reload_occurred = True
                         retry_attempt += 1
-                        break  # Exit inner loop to restart from first lottery
+                        break  # Exit inner loop to restart from selected lotteries
                     else:
                         # No reload needed, move to next lottery
-                        if checked_count < max_lotteries:
+                        if lottery_index < len(selected_lotteries):
                             check_stop()
                             try:
                                 if "apply.html" not in driver.current_url:
@@ -1457,7 +1616,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                                         time.sleep(1)
                             except Exception as e2:
                                 log(f"⚠️ Could not navigate to apply page after error: {e2}. Continuing anyway...", 'warning')
-                        lottery_number += 1
+                        lottery_index += 1
             else:
                 log(f"⚠️ Lottery #{lottery_number} has unexpected status: '{status_text}'. Skipping...", 'warning')
                 lottery_results.append({
@@ -1465,29 +1624,29 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'status': '不明',
                     'reason': f'抽選{lottery_number}のステータスが不明です: {status_text}'
                 })
-                lottery_number += 1
+                lottery_index += 1
         
-        # Check if reload occurred - if yes, restart from first lottery
+        # Check if reload occurred - if yes, restart from selected lotteries
         if reload_occurred:
-            log("🔄 Reload occurred. Will restart from first lottery on next attempt...", 'info')
+            log("🔄 Reload occurred. Will restart from selected lotteries on next attempt...", 'info')
             continue  # Continue to next retry attempt
         
-        # Check if all lotteries have been checked
-        if checked_count >= max_lotteries:
+        # Check if all selected lotteries have been checked
+        if checked_count >= len(selected_lotteries):
             # Count completed lotteries (success + skipped completed)
             processed_count = len([r for r in lottery_results if r['status'] == '成功'])
             skipped_completed_count = len([r for r in lottery_results if r['status'] == 'スキップ(完了)'])
             skipped_closed_count = len([r for r in lottery_results if r['status'] == 'スキップ(終了)'])
             failed_count = len([r for r in lottery_results if r['status'] == '失敗'])
             
-            log(f"✅ Completed checking {checked_count} lotteries (max: {max_lotteries})", 'info')
+            log(f"✅ Completed checking {checked_count} selected lotteries (selected: {lottery_numbers_str})", 'info')
             log(f"📊 Lottery processing summary: {processed_count} processed, {skipped_completed_count} skipped (completed), {skipped_closed_count} skipped (closed), {failed_count} failed", 'info')
             log(f"📋 Completed lotteries: {sorted(completed_lotteries)}", 'info')
             
-            # After all lotteries have been checked, verify if there are any "受付中" lotteries remaining
-            log("🔍 Verifying if there are any remaining '受付中' lotteries...", 'info')
+            # After all selected lotteries have been checked, verify if there are any "受付中" lotteries remaining
+            log("🔍 Verifying if there are any remaining '受付中' lotteries in selected lotteries...", 'info')
             has_open_lotteries = False
-            for check_lottery_num in range(1, max_lotteries + 1):
+            for check_lottery_num in selected_lotteries:
                 check_stop()
                 status_text, exists = _check_lottery_status(driver, wait, check_lottery_num)
                 if exists and status_text == "受付中":
@@ -1510,11 +1669,12 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 continue  # Continue to next retry attempt
             
             # Check if all required lotteries are completed (no open lotteries found)
-            if len(completed_lotteries) >= max_lotteries:
-                log(f"🎉 All {max_lotteries} lotteries have been completed and verified!", 'success')
-                # Final verification: check all lotteries one more time to ensure they are all completed
+            selected_completed = [lottery_num for lottery_num in selected_lotteries if lottery_num in completed_lotteries]
+            if len(selected_completed) >= len(selected_lotteries):
+                log(f"🎉 All selected lotteries ({lottery_numbers_str}) have been completed and verified!", 'success')
+                # Final verification: check all selected lotteries one more time to ensure they are all completed
                 all_verified_completed = True
-                for verify_lottery_num in range(1, max_lotteries + 1):
+                for verify_lottery_num in selected_lotteries:
                     check_stop()
                     status_text, exists = _check_lottery_status(driver, wait, verify_lottery_num)
                     if exists and status_text not in ["受付完了", "受付終了"]:
@@ -1539,8 +1699,8 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 pass
         
         # Determine final status and create message for Excel column D
-        # (Only if we've checked all lotteries)
-        if checked_count >= max_lotteries:
+        # (Only if we've checked all selected lotteries)
+        if checked_count >= len(selected_lotteries):
             # Rules:
             # 1. All lotteries succeeded → "成功"
             # 2. All lotteries skipped (completed) → "成功"
@@ -1634,10 +1794,10 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             
             # Perform final verification before breaking
             if final_status == '成功':
-                # Final verification: check all lotteries one more time to ensure they are all completed
-                log("🔍 Performing final verification: Checking all lotteries one more time...", 'info')
+                # Final verification: check all selected lotteries one more time to ensure they are all completed
+                log(f"🔍 Performing final verification: Checking selected lotteries ({lottery_numbers_str}) one more time...", 'info')
                 all_final_verified = True
-                for final_verify_num in range(1, max_lotteries + 1):
+                for final_verify_num in selected_lotteries:
                     check_stop()
                     status_text, exists = _check_lottery_status(driver, wait, final_verify_num)
                     if exists:
@@ -1737,7 +1897,7 @@ def _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5):
                                 check_stop()
                                 for _ in range(5):
                                     check_stop()
-                                    time.sleep(1)
+                                    time.sleep(1.6)
                                 log(f"✅ Page reloaded via get() (Attempt {reload_attempt})", 'success')
                                 reload_success = True
                             except Exception as e2:
@@ -1748,7 +1908,7 @@ def _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5):
                                     check_stop()
                                     for _ in range(5):
                                         check_stop()
-                                        time.sleep(1)
+                                        time.sleep(1.5)
                                     log(f"✅ Page reloaded via JavaScript (Attempt {reload_attempt})", 'success')
                                     reload_success = True
                                 except Exception as e3:
@@ -1792,7 +1952,7 @@ def _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5):
                                                 pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
                                                 _human_like_click(driver, pop05_link)
                                                 log("✅ Pop05 closed", 'success')
-                                                time.sleep(1)
+                                                time.sleep(1.4)
                                             except:
                                                 pass
                                             return True  # Page was reloaded
@@ -2055,7 +2215,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         dt_element = wait.until(EC.element_to_be_clickable((By.XPATH, dt_xpath)))
         _human_like_click(driver, dt_element)
         check_stop()
-        time.sleep(random.uniform(0.5, 1.0))  # Wait for details to expand
+        time.sleep(random.uniform(0.9, 1.7))  # Wait for details to expand
         
         # Step 3: Click radio button - try multiple strategies to ensure it works
         check_stop()
@@ -2191,7 +2351,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         checkbox_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dd/div[3]/form/div/div'
         checkbox_element = wait.until(EC.element_to_be_clickable((By.XPATH, checkbox_xpath)))
         _human_like_scroll_to_element(driver, checkbox_element)
-        time.sleep(random.uniform(0.2, 0.4))
+        time.sleep(random.uniform(0.8, 1.5))
         _human_like_click(driver, checkbox_element)
         log(f"✅ Checkbox checked for lottery #{lottery_number}", 'success')
         check_stop()
@@ -2210,7 +2370,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         submit_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dd/div[3]/form/ul[2]/li/a'
         submit_element = wait.until(EC.element_to_be_clickable((By.XPATH, submit_xpath)))
         _human_like_scroll_to_element(driver, submit_element)
-        time.sleep(random.uniform(0.3, 0.5))
+        time.sleep(random.uniform(0.9, 1.5))
         _human_like_click(driver, submit_element)
         check_stop()
         time.sleep(random.uniform(1.5, 2.5))  # Wait for modal to appear
@@ -2231,14 +2391,14 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         log(f"🎯 Clicking apply button (applyBtn) in modal for lottery #{lottery_number}...", 'info')
         apply_btn = wait.until(EC.element_to_be_clickable((By.ID, "applyBtn")))
         _human_like_scroll_to_element(driver, apply_btn)
-        time.sleep(random.uniform(0.3, 0.5))
+        time.sleep(random.uniform(0.9, 1.5))
         _human_like_click(driver, apply_btn)
         log(f"✅ Application submitted successfully for lottery #{lottery_number}!", 'success')
         
         # Wait for confirmation and page response
         for _ in range(5):
             check_stop()
-            time.sleep(1)
+            time.sleep(1.8)
         
         # Immediately check for pop04/pop05 errors after apply button click
         check_stop()
@@ -2263,7 +2423,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
                 # Wait for page to load
                 for _ in range(5):
                     check_stop()
-                    time.sleep(1)
+                    time.sleep(1.8)
             except Exception as e:
                 log(f"⚠️ Could not navigate back to apply page: {e}. Continuing anyway...", 'warning')
         else:
@@ -2297,7 +2457,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
                                     log(f"✅ Navigated back to apply page to clear modal", 'success')
                                     for _ in range(3):
                                         check_stop()
-                                        time.sleep(1)
+                                        time.sleep(1.4)
                             except Exception as e2:
                                 log(f"⚠️ Could not navigate to apply page: {e2}. Continuing anyway...", 'warning')
             except Exception as e:
