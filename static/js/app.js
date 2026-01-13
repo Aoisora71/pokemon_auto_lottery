@@ -136,6 +136,17 @@ botForm.addEventListener('submit', async (e) => {
         formData.append('end_row', endRowNum);
     }
     
+    // Get selected lottery numbers
+    const selectedLotteries = Array.from(document.querySelectorAll('input[name="selected_lotteries"]:checked')).map(cb => parseInt(cb.value));
+    if (selectedLotteries.length === 0) {
+        showNotification('少なくとも1つの抽選番号を選択してください', 'error');
+        return;
+    }
+    // Append each selected lottery number
+    selectedLotteries.forEach(lotteryNum => {
+        formData.append('selected_lotteries', lotteryNum);
+    });
+    
     // Get restart mode and validate
     const restartMode = document.querySelector('input[name="restart_mode"]:checked').value;
     formData.append('restart_mode', restartMode);
