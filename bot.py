@@ -1,6 +1,7 @@
 import time
 import re
 import sys
+import json
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -35,6 +36,7 @@ EMAIL = None  # Email must be loaded from Excel file, not from .env
 PASSWORD = os.getenv("PASSWORD")  # Password can be from .env or Excel file
 LOGIN_URL = "https://www.pokemoncenter-online.com/lottery/login.html"
 APPLY_URL = "https://www.pokemoncenter-online.com/lottery/apply.html"
+CAPTCHA_BASE_URL = "http://www.pokemoncenter-online.com"  # Base URL for CAPTCHA solving
 
 # Logger callback - will be set by app.py
 _logger = None
@@ -261,66 +263,309 @@ def check_login_status_message(driver, wait=None):
         log(f"⚠️ Could not check login status message: {e}", 'warning')
         return (None, False)
 
-def solve_recaptcha(site_key, url, max_retries=5):
-    log(f"🔐 Starting CAPTCHA solving process... (Site key: {site_key[:20]}...)", 'info')
+def extract_recaptcha_site_key(driver):
+    """
+    Extract reCAPTCHA site key from the page.
+    Tries multiple methods to find the site key.
+    Returns the site key if found, None otherwise.
+    """
+    try:
+        # Method 1: Look for the specific Pokemon Center site key
+        pokemon_site_key = "6Le9HlYqAAAAAJQtQcq3V_tdd73twiM4Rm2wUvn9"
+        if pokemon_site_key in driver.page_source:
+            return pokemon_site_key
+        
+        # Method 2: Extract from enterprise.js script URL
+        site_key = driver.execute_script("""
+            var siteKey = null;
+            // Check for site key in enterprise.js script URL
+            var scripts = document.getElementsByTagName('script');
+            for (var i = 0; i < scripts.length; i++) {
+                var src = scripts[i].src || '';
+                if (src.includes('recaptcha/enterprise.js') || src.includes('recaptcha/api.js')) {
+                    var match = src.match(/render=([^&]+)/);
+                    if (match) {
+                        siteKey = match[1];
+                        break;
+                    }
+                }
+            }
+            // Check for data-sitekey attribute
+            if (!siteKey) {
+                var recaptchaDiv = document.querySelector('[data-sitekey]');
+                if (recaptchaDiv) {
+                    siteKey = recaptchaDiv.getAttribute('data-sitekey');
+                }
+            }
+            // Check in page source for 6Le pattern
+            if (!siteKey) {
+                var pageSource = document.documentElement.outerHTML;
+                var match = pageSource.match(/6Le[a-zA-Z0-9_-]{38,}/);
+                if (match) {
+                    siteKey = match[0];
+                }
+            }
+            return siteKey;
+        """)
+        return site_key
+    except Exception as e:
+        log(f"⚠️ Error extracting site key: {e}", 'warning')
+        # Fallback to regex search
+        match = re.search(r'6Le[a-zA-Z0-9_-]+', driver.page_source)
+        if match:
+            return match.group(0)
+        return None
+
+def extract_recaptcha_action(driver):
+    """
+    Extract reCAPTCHA pageAction from the page if available.
+    Looks for:
+    1. data-action attribute in reCAPTCHA div element
+    2. action in grecaptcha.execute() or grecaptcha.enterprise.execute() calls
+       Format: grecaptcha.execute('websiteKey', { action: 'myAction' })
+    """
+    try:
+        action = driver.execute_script("""
+            var action = null;
+            
+            // Method 1: Check for data-action attribute in reCAPTCHA div
+            var recaptchaDiv = document.querySelector('[data-sitekey]');
+            if (recaptchaDiv && recaptchaDiv.getAttribute('data-action')) {
+                action = recaptchaDiv.getAttribute('data-action');
+                return action;
+            }
+            
+            // Method 2: Check all divs with data-action (reCAPTCHA v3 often uses this)
+            var allDivs = document.querySelectorAll('[data-action]');
+            for (var i = 0; i < allDivs.length; i++) {
+                var divAction = allDivs[i].getAttribute('data-action');
+                if (divAction && divAction.length > 0) {
+                    action = divAction;
+                    break;
+                }
+            }
+            if (action) return action;
+            
+            // Method 3: Check in grecaptcha.execute() or grecaptcha.enterprise.execute() calls
+            // Pattern 1: grecaptcha.execute('key', { action: 'actionName' })
+            // Pattern 2: grecaptcha.enterprise.execute('key', { action: 'actionName' })
+            var scripts = document.getElementsByTagName('script');
+            for (var i = 0; i < scripts.length; i++) {
+                var scriptText = scripts[i].innerHTML || scripts[i].textContent || '';
+                
+                // Try multiple regex patterns
+                var patterns = [
+                    // Standard execute with options object
+                    /grecaptcha\\.(?:enterprise\\.)?execute\\s*\\([^,]+,\\s*\\{[^}]*action\\s*:\\s*['"]([^'"]+)['"]/,
+                    // Execute with action as second parameter object
+                    /grecaptcha\\.(?:enterprise\\.)?execute\\s*\\([^,]+,\\s*\\{[^}]*['"]action['"]\\s*:\\s*['"]([^'"]+)['"]/,
+                    // Execute with action property
+                    /\\.execute\\s*\\([^)]*\\{[^}]*action\\s*:\\s*['"]([^'"]+)['"]/,
+                    // Action in any object passed to execute
+                    /execute\\s*\\([^)]*\\{[^}]*['"]action['"]\\s*:\\s*['"]([^'"]+)['"]/
+                ];
+                
+                for (var p = 0; p < patterns.length; p++) {
+                    var match = scriptText.match(patterns[p]);
+                    if (match && match[1]) {
+                        action = match[1];
+                        break;
+                    }
+                }
+                if (action) break;
+            }
+            
+            // Method 4: Check in inline event handlers or data attributes
+            if (!action) {
+                var elements = document.querySelectorAll('[onclick*="grecaptcha"], [data-action]');
+                for (var i = 0; i < elements.length; i++) {
+                    var onclick = elements[i].getAttribute('onclick') || '';
+                    var match = onclick.match(/action\s*:\s*['"]([^'"]+)['"]/);
+                    if (match && match[1]) {
+                        action = match[1];
+                        break;
+                    }
+                }
+            }
+            
+            return action;
+        """)
+        if action:
+            log(f"📋 Extracted pageAction: {action}", 'info')
+        return action
+    except Exception as e:
+        log(f"⚠️ Error extracting pageAction: {e}", 'warning')
+        return None
+
+def solve_recaptcha(site_key, url, driver=None, max_retries=5, min_score=0.9, page_action=None):
+    """
+    Solve reCAPTCHA v3 Enterprise using 2Captcha API (new JSON-based API).
+    
+    Parameters:
+    - site_key: reCAPTCHA site key
+    - url: The full URL of target web page
+    - driver: Optional Selenium driver to extract pageAction
+    - max_retries: Maximum retry attempts (default: 5)
+    - min_score: Required score value: 0.3, 0.7, or 0.9 (default: 0.9)
+    - page_action: Optional action parameter value
+    """
+    # Validate API key
+    if not CAPTCHA_API_KEY:
+        raise Exception("CAPTCHA_API_KEY is not set. Please set it in your .env file.")
+    
+    # Validate site key
+    if not site_key or len(site_key) < 20:
+        raise Exception(f"Invalid site key: {site_key}")
+    
+    log(f"🔐 Starting reCAPTCHA v3 Enterprise solving... (Site key: {site_key[:20]}..., URL: {url[:50]}...)", 'info')
+    
+    # Extract pageAction from driver if not provided
+    if driver and not page_action:
+        page_action = extract_recaptcha_action(driver)
+        if page_action:
+            log(f"📋 Extracted pageAction: {page_action}", 'info')
+    
+    # Ensure min_score is valid
+    if min_score not in [0.3, 0.7, 0.9]:
+        min_score = 0.9
+        log(f"⚠️ Invalid min_score, using default: 0.9", 'warning')
+    
+    # API endpoints
+    create_task_url = "https://api.2captcha.com/createTask"
+    get_result_url = "https://api.2captcha.com/getTaskResult"
+    
     for attempt in range(1, max_retries + 1):
         try:
             check_stop()  # Check if stopped before starting attempt
-            log(f"🔄 Solving CAPTCHA... (Attempt {attempt}/{max_retries})", 'info')
-            submit_url = f"http://2captcha.com/in.php?key={CAPTCHA_API_KEY}&method=userrecaptcha&googlekey={site_key}&pageurl={url}&invisible=1"
-            response = requests.get(submit_url)
+            log(f"🔄 Solving CAPTCHA... (Attempt {attempt}/{max_retries}, minScore: {min_score})", 'info')
             
-            if "OK|" not in response.text:
-                error_msg = response.text
-                log(f"❌ 2Captcha submit error: {error_msg}", 'error')
+            # Prepare task payload
+            task = {
+                "type": "RecaptchaV3TaskProxyless",
+                "websiteURL": url,
+                "websiteKey": site_key,
+                "minScore": float(min_score),  # Ensure it's a float
+                "isEnterprise": True,  # Pokemon Center uses Enterprise version
+                "apiDomain": "www.google.com"
+            }
+            
+            # Add pageAction if available
+            if page_action:
+                task["pageAction"] = str(page_action)
+            
+            payload = {
+                "clientKey": str(CAPTCHA_API_KEY),
+                "task": task
+            }
+            
+            log(f"📋 Task payload: type={task['type']}, websiteKey={site_key[:20]}..., minScore={min_score}, isEnterprise={task['isEnterprise']}, pageAction={page_action or 'None'}", 'info')
+            
+            # Submit task
+            log(f"📤 Submitting CAPTCHA task to 2Captcha...", 'info')
+            try:
+                response = requests.post(create_task_url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+                response.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                log(f"❌ Network error submitting CAPTCHA: {e}", 'error')
                 if attempt < max_retries:
                     log(f"⏳ Retrying in 3 seconds...", 'warning')
                     for _ in range(3):
-                        check_stop()  # Check stop during wait
+                        check_stop()
                         time.sleep(1)
                     continue
                 else:
-                    raise Exception(f"2captcha error: {error_msg}")
+                    raise Exception(f"Network error: {e}")
             
-            captcha_id = response.text.split("|")[1]
-            log(f"📝 CAPTCHA submitted successfully. ID: {captcha_id}", 'info')
+            try:
+                response_data = response.json()
+            except json.JSONDecodeError as e:
+                raise Exception(f"Invalid JSON response: {response.text[:200]}")
             
-            result_url = f"http://2captcha.com/res.php?key={CAPTCHA_API_KEY}&action=get&id={captcha_id}"
+            error_id = response_data.get("errorId", 0)
+            if error_id != 0:
+                error_code = response_data.get("errorCode", "UNKNOWN")
+                error_msg = response_data.get("errorDescription", response_data.get("errorCode", "Unknown error"))
+                log(f"❌ 2Captcha submit error (ID: {error_id}, Code: {error_code}): {error_msg}", 'error')
+                if attempt < max_retries:
+                    log(f"⏳ Retrying in 3 seconds...", 'warning')
+                    for _ in range(3):
+                        check_stop()
+                        time.sleep(1)
+                    continue
+                else:
+                    raise Exception(f"2captcha error ({error_code}): {error_msg}")
             
-            for i in range(30):
+            task_id = response_data.get("taskId")
+            if not task_id:
+                raise Exception(f"No taskId in response: {response_data}")
+            
+            log(f"📝 CAPTCHA task submitted successfully. Task ID: {task_id}", 'info')
+            
+            # Poll for result
+            result_payload = {
+                "clientKey": CAPTCHA_API_KEY,
+                "taskId": task_id
+            }
+            
+            for i in range(60):  # Poll up to 60 times (5 minutes max)
                 check_stop()  # Check stop before each wait
                 time.sleep(5)
                 check_stop()  # Check stop after wait
-                result = requests.get(result_url)
                 
-                if "CAPCHA_NOT_READY" in result.text:
-                    log(f"⏳ Waiting for CAPTCHA solution... ({i+1}/30)", 'info')
+                try:
+                    result_response = requests.post(get_result_url, json=result_payload, headers={"Content-Type": "application/json"}, timeout=30)
+                    result_response.raise_for_status()
+                except requests.exceptions.RequestException as e:
+                    log(f"⚠️ Network error getting CAPTCHA result: {e}, continuing...", 'warning')
                     continue
-                elif "OK|" in result.text:
-                    solution = result.text.split("|")[1]
-                    log(f"✅ CAPTCHA solved successfully! (Solution length: {len(solution)} chars)", 'success')
-                    return solution
-                elif "ERROR_CAPTCHA_UNSOLVABLE" in result.text:
-                    log(f"⚠️ CAPTCHA unsolvable, retrying... (Attempt {attempt}/{max_retries})", 'warning')
-                    if attempt < max_retries:
-                        for _ in range(3):
-                            check_stop()
-                            time.sleep(1.5)
-                        break  # Break inner loop to retry from start
+                
+                try:
+                    result_data = result_response.json()
+                except json.JSONDecodeError as e:
+                    log(f"⚠️ Invalid JSON in result response: {result_response.text[:200]}, continuing...", 'warning')
+                    continue
+                
+                status = result_data.get("status")
+                error_id = result_data.get("errorId", 0)
+                
+                if status == "processing":
+                    log(f"⏳ Waiting for CAPTCHA solution... ({i+1}/60)", 'info')
+                    continue
+                elif status == "ready":
+                    solution_data = result_data.get("solution", {})
+                    solution = solution_data.get("gRecaptchaResponse") or solution_data.get("token")
+                    
+                    if solution:
+                        score = solution_data.get("score", "N/A")
+                        log(f"✅ CAPTCHA solved successfully! (Solution length: {len(solution)} chars, Score: {score})", 'success')
+                        return solution
                     else:
-                        raise Exception(f"2captcha error: {result.text}")
-                else:
-                    error_msg = result.text
-                    log(f"❌ 2Captcha result error: {error_msg}", 'error')
-                    if attempt < max_retries:
-                        for _ in range(3):
-                            check_stop()
-                            time.sleep(1.4)
-                        break  # Break inner loop to retry from start
+                        raise Exception(f"No solution token in response: {result_data}")
+                elif error_id != 0:
+                    error_id = result_data.get("errorId")
+                    error_code = result_data.get("errorCode")
+                    error_description = result_data.get("errorDescription", "Unknown error")
+                    
+                    if error_code == "ERROR_CAPTCHA_UNSOLVABLE":
+                        log(f"⚠️ CAPTCHA unsolvable, retrying... (Attempt {attempt}/{max_retries})", 'warning')
+                        if attempt < max_retries:
+                            for _ in range(3):
+                                check_stop()
+                                time.sleep(1.5)
+                            break  # Break inner loop to retry from start
+                        else:
+                            raise Exception(f"2captcha error: {error_description}")
                     else:
-                        raise Exception(f"2captcha error: {error_msg}")
+                        log(f"❌ 2Captcha result error: {error_description} (Code: {error_code})", 'error')
+                        if attempt < max_retries:
+                            for _ in range(3):
+                                check_stop()
+                                time.sleep(1.4)
+                            break  # Break inner loop to retry from start
+                        else:
+                            raise Exception(f"2captcha error: {error_description}")
             else:
-                # If we exhausted the 30 attempts without success, retry
+                # If we exhausted the polling attempts without success, retry
                 if attempt < max_retries:
                     log(f"⏱️ CAPTCHA timeout, retrying... (Attempt {attempt}/{max_retries})", 'warning')
                     for _ in range(3):
@@ -333,7 +578,7 @@ def solve_recaptcha(site_key, url, max_retries=5):
             log("⏹️ CAPTCHA solving stopped by user", 'warning')
             raise
         except Exception as e:
-            if attempt < max_retries and "2captcha error" in str(e):
+            if attempt < max_retries and ("2captcha error" in str(e) or "timeout" in str(e).lower()):
                 log(f"⚠️ Error occurred: {e}, retrying... (Attempt {attempt}/{max_retries})", 'warning')
                 for _ in range(3):
                     check_stop()
@@ -525,41 +770,13 @@ def _attempt_login_with_captcha(driver, wait):
             check_stop()
             time.sleep(1)
         
-        # Find and solve CAPTCHA first
+        # Find CAPTCHA site key first (we'll solve it right before login to ensure fresh token)
         check_stop()
         log("🔍 Looking for CAPTCHA on login page...", 'info')
-        match = re.search(r'6Le[a-zA-Z0-9_-]+', driver.page_source)
-        if match:
-            site_key = match.group(0)
-            log(f"🔑 Found reCAPTCHA site key: {site_key[:30]}...", 'info')
-            
-            try:
-                captcha_solution = solve_recaptcha(site_key, driver.current_url)
-            except StopIteration:
-                log("⏹️ Login process stopped during CAPTCHA solving", 'warning')
-                raise
-            
-            log("💉 Injecting CAPTCHA solution into page...", 'info')
-            driver.execute_script(f'''
-                var callback = function(token) {{
-                    var textareas = document.getElementsByName("g-recaptcha-response");
-                    for (var i = 0; i < textareas.length; i++) {{
-                        textareas[i].value = token;
-                    }}
-                }};
-                callback("{captcha_solution}");
-                
-                if (typeof ___grecaptcha_cfg !== 'undefined') {{
-                    Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
-                        var client = ___grecaptcha_cfg.clients[key];
-                        if (client && client.callback) {{
-                            client.callback("{captcha_solution}");
-                        }}
-                    }});
-                }}
-            ''')
-            log("✅ CAPTCHA solution injected", 'success')
-            time.sleep(2)
+        site_key = extract_recaptcha_site_key(driver)
+        captcha_solution = None  # Will be solved right before login to avoid expiration
+        if site_key:
+            log(f"🔑 Found reCAPTCHA site key: {site_key[:30]}... (Will solve right before login)", 'info')
         else:
             log("ℹ️ No CAPTCHA found on login page, proceeding with login...", 'info')
         
@@ -582,9 +799,253 @@ def _attempt_login_with_captcha(driver, wait):
         log("✅ Password entered successfully", 'success')
         check_stop()
         
+        # Solve CAPTCHA right before login to ensure fresh token (avoids expiration)
+        if site_key:
+            try:
+                log("🔐 Solving CAPTCHA right before login (to ensure fresh token)...", 'info')
+                captcha_solution = solve_recaptcha(site_key, CAPTCHA_BASE_URL, driver=driver, min_score=0.9)
+                log("✅ Fresh CAPTCHA token obtained", 'success')
+                
+                # Immediately inject the fresh token
+                log("💉 Injecting fresh CAPTCHA token into page...", 'info')
+                escaped_token = captcha_solution.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                escaped_site_key = site_key.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
+                driver.execute_script(f'''
+                    (function() {{
+                        var token = "{escaped_token}";
+                        var siteKey = "{escaped_site_key}";
+                        
+                        // Set token in all locations
+                        var textareas = document.getElementsByName("g-recaptcha-response");
+                        for (var i = 0; i < textareas.length; i++) {{
+                            textareas[i].value = token;
+                            textareas[i].innerHTML = token;
+                        }}
+                        
+                        var inputs = document.querySelectorAll('input[name="g-recaptcha-response"]');
+                        for (var i = 0; i < inputs.length; i++) {{
+                            inputs[i].value = token;
+                        }}
+                        
+                        // Trigger Enterprise ready callbacks
+                        if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                            var cfg = ___grecaptcha_cfg;
+                            if (cfg['fns'] && Array.isArray(cfg['fns'])) {{
+                                cfg['fns'].forEach(function(fn) {{
+                                    if (typeof fn === 'function') {{
+                                        try {{ fn(token); }} catch(e) {{}}
+                                    }}
+                                }});
+                            }}
+                            Object.keys(cfg.clients || {{}}).forEach(function(key) {{
+                                var client = cfg.clients[key];
+                                if (client) {{
+                                    if (client.response !== undefined) client.response = token;
+                                    if (typeof client.callback === 'function') {{
+                                        try {{ client.callback(token); }} catch(e) {{}}
+                                    }}
+                                }}
+                            }});
+                        }}
+                        
+                        // Store for getResponse
+                        if (!window.__grecaptchaTokens) window.__grecaptchaTokens = {{}};
+                        window.__grecaptchaTokens[siteKey] = token;
+                        window.__recaptchaToken = token;
+                        
+                        // Dispatch events
+                        textareas = document.getElementsByName("g-recaptcha-response");
+                        for (var i = 0; i < textareas.length; i++) {{
+                            textareas[i].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            textareas[i].dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }})();
+                ''')
+                time.sleep(1)
+                log("✅ Fresh token injected", 'success')
+            except StopIteration:
+                log("⏹️ Login process stopped during CAPTCHA solving", 'warning')
+                raise
+            except Exception as e:
+                log(f"⚠️ Could not solve/inject CAPTCHA before login: {e}", 'warning')
+                # Continue anyway - might work without it
+        
+        # Verify and re-inject CAPTCHA token before clicking login button
+        if site_key and captcha_solution:
+            log("🔍 Verifying CAPTCHA token before login...", 'info')
+            try:
+                token_verified = driver.execute_script("""
+                    var textareas = document.getElementsByName("g-recaptcha-response");
+                    if (textareas.length > 0 && textareas[0].value && textareas[0].value.length > 50) {
+                        return true;
+                    }
+                    return false;
+                """)
+                
+                if not token_verified:
+                    log("⚠️ CAPTCHA token not found or invalid, re-injecting...", 'warning')
+                    # Re-inject the token
+                    escaped_token = captcha_solution.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                    driver.execute_script(f'''
+                        (function() {{
+                            var token = "{escaped_token}";
+                            var textareas = document.getElementsByName("g-recaptcha-response");
+                            for (var i = 0; i < textareas.length; i++) {{
+                                textareas[i].value = token;
+                                textareas[i].innerHTML = token;
+                            }}
+                            var inputs = document.querySelectorAll('input[name="g-recaptcha-response"]');
+                            for (var i = 0; i < inputs.length; i++) {{
+                                inputs[i].value = token;
+                            }}
+                            if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                                Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
+                                    var client = ___grecaptcha_cfg.clients[key];
+                                    if (client) {{
+                                        if (client.response) client.response = token;
+                                        if (client.callback) {{
+                                            try {{ client.callback(token); }} catch(e) {{}}
+                                        }}
+                                    }}
+                                }});
+                            }}
+                            window.__recaptchaToken = token;
+                            window.grecaptchaToken = token;
+                        }})();
+                    ''')
+                    time.sleep(1)
+                    log("✅ CAPTCHA token re-injected", 'success')
+                else:
+                    log("✅ CAPTCHA token verified and present", 'success')
+            except Exception as e:
+                log(f"⚠️ Could not verify token before login: {e}", 'warning')
+        
         check_stop()
         log("🖱️ Clicking login button...", 'info')
+        
+        # Intercept form submission to ensure token is always included
+        if site_key and captcha_solution:
+            try:
+                log("🔧 Setting up form submission interception...", 'info')
+                escaped_token = captcha_solution.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                driver.execute_script(f'''
+                    (function() {{
+                        var token = "{escaped_token}";
+                        
+                        // Intercept all form submissions to ensure token is included
+                        var originalSubmit = HTMLFormElement.prototype.submit;
+                        HTMLFormElement.prototype.submit = function() {{
+                            // Ensure token is set before submission
+                            var textareas = document.getElementsByName("g-recaptcha-response");
+                            for (var i = 0; i < textareas.length; i++) {{
+                                if (!textareas[i].value || textareas[i].value.length < 50) {{
+                                    textareas[i].value = token;
+                                }}
+                            }}
+                            var inputs = document.querySelectorAll('input[name="g-recaptcha-response"]');
+                            for (var i = 0; i < inputs.length; i++) {{
+                                if (!inputs[i].value || inputs[i].value.length < 50) {{
+                                    inputs[i].value = token;
+                                }}
+                            }}
+                            return originalSubmit.apply(this, arguments);
+                        }};
+                        
+                        // Also intercept fetch/XHR requests that might be used for login
+                        var originalFetch = window.fetch;
+                        window.fetch = function() {{
+                            var args = arguments;
+                            if (args[0] && typeof args[0] === 'string' && args[0].includes('login')) {{
+                                // If it's a login request, ensure token is in the body
+                                if (args[1] && args[1].body) {{
+                                    try {{
+                                        var body = args[1].body;
+                                        if (typeof body === 'string') {{
+                                            if (!body.includes('g-recaptcha-response')) {{
+                                                var separator = body.includes('&') ? '&' : '?';
+                                                args[1].body = body + separator + 'g-recaptcha-response=' + encodeURIComponent(token);
+                                            }}
+                                        }} else if (body instanceof FormData) {{
+                                            if (!body.has('g-recaptcha-response')) {{
+                                                body.append('g-recaptcha-response', token);
+                                            }}
+                                        }}
+                                    }} catch(e) {{
+                                        console.log("Fetch interception error:", e);
+                                    }}
+                                }}
+                            }}
+                            return originalFetch.apply(this, args);
+                        }};
+                        
+                        // Set token in all possible locations one more time
+                        var textareas = document.getElementsByName("g-recaptcha-response");
+                        for (var i = 0; i < textareas.length; i++) {{
+                            textareas[i].value = token;
+                            textareas[i].innerHTML = token;
+                        }}
+                        
+                        var inputs = document.querySelectorAll('input[name="g-recaptcha-response"]');
+                        for (var i = 0; i < inputs.length; i++) {{
+                            inputs[i].value = token;
+                        }}
+                        
+                        // Trigger all callbacks
+                        if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                            var cfg = ___grecaptcha_cfg;
+                            // Call ready callbacks
+                            if (cfg['fns'] && Array.isArray(cfg['fns'])) {{
+                                cfg['fns'].forEach(function(fn) {{
+                                    if (typeof fn === 'function') {{
+                                        try {{ fn(token); }} catch(e) {{}}
+                                    }}
+                                }});
+                            }}
+                            // Call client callbacks
+                            Object.keys(cfg.clients || {{}}).forEach(function(key) {{
+                                var client = cfg.clients[key];
+                                if (client) {{
+                                    if (client.response !== undefined) client.response = token;
+                                    if (typeof client.callback === 'function') {{
+                                        try {{ client.callback(token); }} catch(e) {{}}
+                                    }}
+                                }}
+                            }});
+                        }}
+                        
+                        // Dispatch events
+                        textareas = document.getElementsByName("g-recaptcha-response");
+                        for (var i = 0; i < textareas.length; i++) {{
+                            var inputEvent = new Event('input', {{ bubbles: true, cancelable: true }});
+                            textareas[i].dispatchEvent(inputEvent);
+                            var changeEvent = new Event('change', {{ bubbles: true, cancelable: true }});
+                            textareas[i].dispatchEvent(changeEvent);
+                        }}
+                        
+                        console.log("Form submission interception set up with token length:", token.length);
+                    }})();
+                ''')
+                time.sleep(0.5)
+                log("✅ Form submission interception configured", 'success')
+            except Exception as e:
+                log(f"⚠️ Could not set up form interception: {e}", 'warning')
+        
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.loginBtn")))
+        
+        # One final token check and set right before clicking
+        if site_key and captcha_solution:
+            try:
+                escaped_token = captcha_solution.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                driver.execute_script(f'''
+                    var token = "{escaped_token}";
+                    var textareas = document.getElementsByName("g-recaptcha-response");
+                    for (var i = 0; i < textareas.length; i++) {{
+                        textareas[i].value = token;
+                    }}
+                ''')
+            except:
+                pass
+        
         _human_like_click(driver, login_btn)
         log("⏳ Waiting for login response...", 'info')
         for _ in range(8):
@@ -1309,40 +1770,216 @@ def _check_and_solve_captcha_on_apply_page(driver, wait):
             return False
         
         # Look for reCAPTCHA in the page source
-        page_source = driver.page_source
-        match = re.search(r'6Le[a-zA-Z0-9_-]+', page_source)
+        site_key = extract_recaptcha_site_key(driver)
         
-        if match:
-            site_key = match.group(0)
+        if site_key:
             log(f"🔑 Found reCAPTCHA on apply page. Site key: {site_key[:30]}...", 'info')
             
             try:
                 # Solve CAPTCHA using 2captcha API
                 check_stop()
-                captcha_solution = solve_recaptcha(site_key, driver.current_url)
+                captcha_solution = solve_recaptcha(site_key, driver.current_url, driver=driver, min_score=0.9)
                 
                 log("💉 Injecting CAPTCHA solution into apply page...", 'info')
+                # Escape the token properly for JavaScript
+                escaped_token = captcha_solution.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                # Also escape the site_key for use in JavaScript
+                escaped_site_key = site_key.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
                 # Inject CAPTCHA solution into the page
                 driver.execute_script(f'''
-                    var callback = function(token) {{
-                        var textareas = document.getElementsByName("g-recaptcha-response");
-                        for (var i = 0; i < textareas.length; i++) {{
-                            textareas[i].value = token;
-                        }}
-                    }};
-                    callback("{captcha_solution}");
-                    
-                    if (typeof ___grecaptcha_cfg !== 'undefined') {{
-                        Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
-                            var client = ___grecaptcha_cfg.clients[key];
-                            if (client && client.callback) {{
-                                client.callback("{captcha_solution}");
+                    (function() {{
+                        var token = "{escaped_token}";
+                        
+                        // Wait for grecaptcha to be available
+                        function injectToken() {{
+                            // Set value in g-recaptcha-response textarea
+                            var textareas = document.getElementsByName("g-recaptcha-response");
+                            for (var i = 0; i < textareas.length; i++) {{
+                                textareas[i].value = token;
+                                textareas[i].innerHTML = token;
                             }}
-                        }});
-                    }}
+                            
+                            // Also set in hidden input fields
+                            var inputs = document.querySelectorAll('input[name="g-recaptcha-response"]');
+                            for (var i = 0; i < inputs.length; i++) {{
+                                inputs[i].value = token;
+                            }}
+                            
+                            // Set in any element with id containing recaptcha
+                            var allInputs = document.querySelectorAll('input, textarea');
+                            for (var i = 0; i < allInputs.length; i++) {{
+                                if (allInputs[i].name && allInputs[i].name.includes('recaptcha')) {{
+                                    allInputs[i].value = token;
+                                }}
+                            }}
+                            
+                            // Method 1: Set token in g-recaptcha-response form field (primary method)
+                            // This is already done above
+                            
+                            // Method 2: Pass token to callback functions
+                            // Trigger callbacks for reCAPTCHA v3 Enterprise
+                            if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                                Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
+                                    var client = ___grecaptcha_cfg.clients[key];
+                                    if (client) {{
+                                        // Set the response directly in client object
+                                        if (client.response !== undefined) {{
+                                            client.response = token;
+                                        }}
+                                        // Set in widget response
+                                        if (client.widgetId !== undefined) {{
+                                            try {{
+                                                var widget = document.getElementById('g-recaptcha-response-' + client.widgetId);
+                                                if (widget) widget.value = token;
+                                            }} catch(e) {{
+                                                console.log("Widget error:", e);
+                                            }}
+                                        }}
+                                        // Trigger callback function if available (this is how token is passed to callback)
+                                        if (typeof client.callback === 'function') {{
+                                            try {{
+                                                client.callback(token);
+                                            }} catch(e) {{
+                                                console.log("Callback error:", e);
+                                            }}
+                                        }}
+                                        // Also check for onSuccess callback
+                                        if (typeof client.onSuccess === 'function') {{
+                                            try {{
+                                                client.onSuccess(token);
+                                            }} catch(e) {{
+                                                console.log("onSuccess error:", e);
+                                            }}
+                                        }}
+                                    }}
+                                }});
+                            }}
+                            
+                            // Method 3: For reCAPTCHA v3 Enterprise, handle grecaptcha.enterprise.ready() callbacks
+                            // Based on the actual Enterprise implementation: gr.ready() stores callbacks in cfg['fns']
+                            if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                                try {{
+                                    // Call all functions registered via gr.ready() (stored in cfg['fns'])
+                                    var cfg = ___grecaptcha_cfg;
+                                    if (cfg['fns'] && Array.isArray(cfg['fns'])) {{
+                                        cfg['fns'].forEach(function(fn) {{
+                                            if (typeof fn === 'function') {{
+                                                try {{
+                                                    // Call the ready callback with the token
+                                                    fn(token);
+                                                }} catch(e) {{
+                                                    console.log("Enterprise ready callback error:", e);
+                                                }}
+                                            }}
+                                        }});
+                                    }}
+                                    
+                                    // Also handle grecaptcha.enterprise if available
+                                    if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {{
+                                        try {{
+                                            // Store token for getResponse() calls
+                                            if (!window.__grecaptchaTokens) window.__grecaptchaTokens = {{}};
+                                            var siteKey = "{escaped_site_key}";
+                                            if (siteKey && siteKey.length > 0) {{
+                                                window.__grecaptchaTokens[siteKey] = token;
+                                            }}
+                                            
+                                            // If enterprise.ready exists, call it
+                                            if (typeof grecaptcha.enterprise.ready === 'function') {{
+                                                try {{
+                                                    grecaptcha.enterprise.ready(function() {{
+                                                        // This callback is called when Enterprise is ready
+                                                        // We can set the token here
+                                                    }});
+                                                }} catch(e) {{
+                                                    console.log("Enterprise ready error:", e);
+                                                }}
+                                            }}
+                                        }} catch(e) {{
+                                            console.log("Token storage error:", e);
+                                        }}
+                                    }}
+                                    
+                                    // Set in window object for any scripts that might check it
+                                    window.__recaptchaToken = token;
+                                    window.grecaptchaToken = token;
+                                    window.recaptchaToken = token;
+                                    
+                                    // If there are any global callback functions registered
+                                    if (typeof window.recaptchaCallback === 'function') {{
+                                        try {{
+                                            window.recaptchaCallback(token);
+                                        }} catch(e) {{
+                                            console.log("Global callback error:", e);
+                                        }}
+                                    }}
+                                }} catch(e) {{
+                                    console.log("grecaptcha error:", e);
+                                }}
+                            }}
+                            
+                            // Method 4: Find and call any registered callback functions in the page
+                            // Look for functions that might be waiting for the token
+                            try {{
+                                // Check for common callback patterns
+                                var callbackNames = ['recaptchaCallback', 'onRecaptchaSuccess', 'handleRecaptcha', 'recaptchaSuccess'];
+                                for (var i = 0; i < callbackNames.length; i++) {{
+                                    if (typeof window[callbackNames[i]] === 'function') {{
+                                        try {{
+                                            window[callbackNames[i]](token);
+                                        }} catch(e) {{
+                                            console.log("Callback " + callbackNames[i] + " error:", e);
+                                        }}
+                                    }}
+                                }}
+                            }} catch(e) {{
+                                console.log("Callback search error:", e);
+                            }}
+                            
+                            // Dispatch input events to notify the page
+                            textareas = document.getElementsByName("g-recaptcha-response");
+                            for (var i = 0; i < textareas.length; i++) {{
+                                var inputEvent = new Event('input', {{ bubbles: true, cancelable: true }});
+                                textareas[i].dispatchEvent(inputEvent);
+                                var changeEvent = new Event('change', {{ bubbles: true, cancelable: true }});
+                                textareas[i].dispatchEvent(changeEvent);
+                                // Also trigger focus/blur to simulate user interaction
+                                textareas[i].focus();
+                                textareas[i].blur();
+                            }}
+                            
+                            // Trigger a custom event
+                            var customEvent = new CustomEvent('recaptcha-token-set', {{ detail: {{ token: token }} }});
+                            document.dispatchEvent(customEvent);
+                        }}
+                        
+                        // Try to inject immediately
+                        injectToken();
+                        
+                        // Also try after a short delay in case grecaptcha loads later
+                        setTimeout(injectToken, 500);
+                        setTimeout(injectToken, 1000);
+                    }})();
                 ''')
                 log("✅ CAPTCHA solution injected into apply page", 'success')
-                time.sleep(2)  # Wait for CAPTCHA to be processed
+                
+                # Verify token was set
+                try:
+                    token_set = driver.execute_script("""
+                        var textareas = document.getElementsByName("g-recaptcha-response");
+                        if (textareas.length > 0) {
+                            return textareas[0].value.length > 0;
+                        }
+                        return false;
+                    """)
+                    if token_set:
+                        log("✅ Verified: CAPTCHA token is set in apply page", 'success')
+                    else:
+                        log("⚠️ Warning: CAPTCHA token may not be set properly in apply page", 'warning')
+                except Exception as e:
+                    log(f"⚠️ Could not verify token: {e}", 'warning')
+                
+                time.sleep(3)  # Wait longer for CAPTCHA to be processed
                 check_stop()
                 return True
             except StopIteration:
